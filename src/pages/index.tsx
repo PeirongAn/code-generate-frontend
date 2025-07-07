@@ -1,6 +1,6 @@
 import * as React from "react";
 import MagenticUILayout from "../components/layout";
-import { graphql } from "gatsby"
+import { graphql } from "gatsby";
 
 // markup
 const IndexPage = ({ data }: any) => {

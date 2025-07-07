@@ -194,9 +194,9 @@ const ChatInput = React.forwardRef<{ focus: () => void }, ChatInputProps>(
               setFileList((prev) => [...prev, uploadFile]);
 
               // Show successful paste notification
-              message.success(`Image pasted successfully`);
+              message.success(`图片粘贴成功`);
             } else if (file && file.size > MAX_FILE_SIZE) {
-              message.error(`Pasted image is too large. Maximum size is 5MB.`);
+              message.error(`粘贴的图片太大。最大尺寸为 5MB。`);
             }
           }
 
@@ -254,12 +254,12 @@ const ChatInput = React.forwardRef<{ focus: () => void }, ChatInputProps>(
                 notificationApi.info({
                   message: (
                     <span className="text-sm">
-                      Large Text Converted to File
+                      大文本已转换为文件
                     </span>
                   ),
                   description: (
                     <span className="text-sm text-secondary">
-                      Your pasted text has been attached as a file.
+                      您粘贴的文本已作为文件附件。
                     </span>
                   ),
                   duration: 3,
@@ -431,18 +431,17 @@ const ChatInput = React.forwardRef<{ focus: () => void }, ChatInputProps>(
     const handleFileValidationAndAdd = (file: File): boolean => {
       // Check file size
       if (file.size > MAX_FILE_SIZE) {
-        message.error(`${file.name} is too large. Maximum size is 5MB.`);
+        message.error(`${file.name} 文件太大。最大尺寸为 5MB。`);
         return false;
       }
 
       // Check file type
       if (!ALLOWED_FILE_TYPES.includes(file.type)) {
         notificationApi.warning({
-          message: <span className="text-sm">Unsupported File Type</span>,
+          message: <span className="text-sm">不支持的文件类型</span>,
           description: (
             <span className="text-sm text-secondary">
-              Please upload only text (.txt) or images (.jpg, .png, .gif, .svg)
-              files.
+              请仅上传文本 (.txt) 或图片 (.jpg, .png, .gif, .svg) 文件。
             </span>
           ),
           duration: 8.5,
@@ -653,7 +652,7 @@ const ChatInput = React.forwardRef<{ focus: () => void }, ChatInputProps>(
 
         {/* Plan View Modal */}
         <Modal
-          title={`Plan: ${attachedPlan?.task || "Untitled Plan"}`}
+          title={`计划: ${attachedPlan?.task || "未命名计划"}`}
           open={isPlanModalVisible}
           onCancel={handlePlanModalClose}
           footer={null}
@@ -707,12 +706,12 @@ const ChatInput = React.forwardRef<{ focus: () => void }, ChatInputProps>(
                     }}
                     placeholder={
                       runStatus === "awaiting_input"
-                        ? "Type your response here and let Magentic-UI know of any changes in the browser."
+                        ? "在此输入您的回复，并让 Magentic-UI 了解浏览器中的任何变化。"
                         : enable_upload
                         ? dragOver
-                          ? "Drop files here..."
-                          : "Type your message here..."
-                        : "Type your message here..."
+                          ? "将文件拖放到这里..."
+                          : "在此输入您的消息..."
+                        : "在此输入您的消息..."
                     }
                     disabled={isInputDisabled}
                   />
@@ -738,13 +737,13 @@ const ChatInput = React.forwardRef<{ focus: () => void }, ChatInputProps>(
                         <Menu>
                           <Menu.Item key="attach-file">
                             <Upload {...uploadProps} showUploadList={false}>
-                              <span>Attach File</span>
+                              <span>附加文件</span>
                             </Upload>
                           </Menu.Item>
-                          <Menu.SubMenu key="attach-plan" title="Attach Plan">
+                          <Menu.SubMenu key="attach-plan" title="附加计划">
                             {allPlans.length === 0 ? (
                               <Menu.Item disabled key="no-plans">
-                                No plans available
+                                暂无可用计划
                               </Menu.Item>
                             ) : (
                               allPlans.map((plan: any) => (
@@ -763,7 +762,7 @@ const ChatInput = React.forwardRef<{ focus: () => void }, ChatInputProps>(
                     >
                       <Tooltip
                         title={
-                          <span className="text-sm">Attach File or Plan</span>
+                          <span className="text-sm">附加文件或计划</span>
                         }
                         placement="top"
                       >

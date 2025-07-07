@@ -95,8 +95,8 @@ export default function ChatView({
   const [noMessagesYet, setNoMessagesYet] = React.useState(true);
   const chatContainerRef = React.useRef<HTMLDivElement | null>(null);
   const [isDetailViewerMinimized, setIsDetailViewerMinimized] =
-    React.useState(true);
-  const [showDetailViewer, setShowDetailViewer] = React.useState(true);
+    React.useState(false);
+  const [showDetailViewer, setShowDetailViewer] = React.useState(false);
   const [hasFinalAnswer, setHasFinalAnswer] = React.useState(false);
 
   // Context and config

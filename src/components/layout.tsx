@@ -83,9 +83,6 @@ const MagenticUILayout = ({
             <SessionManager />
           </main>
         </ConfigProvider>
-        <div className="text-sm text-primary mt-2 mb-2 text-center">
-          Magentic-UI 可能会犯错。请在使用时注意监督，并在必要时进行干预。
-        </div>
       </div>
     </div>
   );
