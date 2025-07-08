@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Globe2 } from "lucide-react";
+import { Globe2, Code2 } from "lucide-react";
 import { Run, Message } from "../../types/datamodel";
 import { RenderMessage, messageUtils } from "./rendermessage";
 import { getStatusIcon } from "../statusicon";
 import DetailViewer from "./detail_viewer";
+import CodeIDEEditor from "./CodeIDEEditor";
 import { IPlanStep, IPlan } from "../../types/plan";
 import ApprovalButtons from "./approval_buttons";
 import ChatInput from "./chatinput";
@@ -37,6 +38,21 @@ interface RunViewProps {
   chatInputRef?: React.RefObject<any>;
   onExecutePlan?: (plan: IPlan) => void;
   enable_upload?: boolean;
+  // 浏览器控制相关 props
+  novncPort?: string;
+  onToggleDetailViewer?: () => void;
+  // 代码编辑器控制相关 props
+  hasCode?: boolean;
+  showCodeEditor?: boolean;
+  onToggleCodeEditor?: () => void;
+  currentCode?: string;
+  onCodeRun?: (code: string) => void;
+  onCodeTest?: (code: string) => void;
+  onOpenCodeInEditor?: (code: string) => void;
+  isCodeEditorMinimized?: boolean;
+  setIsCodeEditorMinimized?: (minimized: boolean) => void;
+  // 临时消息相关
+  pendingMessage?: string | null;
 }
 
 const RunView: React.FC<RunViewProps> = ({
@@ -59,13 +75,35 @@ const RunView: React.FC<RunViewProps> = ({
   chatInputRef,
   onExecutePlan,
   enable_upload = false,
+  novncPort: externalNovncPort,
+  onToggleDetailViewer,
+  hasCode = false,
+  showCodeEditor = false,
+  onToggleCodeEditor,
+  currentCode = "",
+  onCodeRun,
+  onCodeTest,
+  onOpenCodeInEditor,
+  isCodeEditorMinimized = false,
+  setIsCodeEditorMinimized,
+  pendingMessage,
 }) => {
+  console.log('##### RunView rendering with props #####', {
+    hasCode,
+    showCodeEditor,
+    currentCode: currentCode.substring(0, 50) + (currentCode.length > 50 ? '...' : ''),
+    runId: run.id
+  });
   const threadContainerRef = useRef<HTMLDivElement | null>(null);
-  const [novncPort, setNovncPort] = useState<string | undefined>();
+  const [localNovncPort, setLocalNovncPort] = useState<string | undefined>();
+  
+  // Use external novncPort if provided, otherwise use local state
+  const novncPort = externalNovncPort || localNovncPort;
   const [detailViewerExpanded, setDetailViewerExpanded] = useState(false);
   const [detailViewerTab, setDetailViewerTab] = useState<
     "screenshots" | "live"
   >("live");
+  const [codeEditorExpanded, setCodeEditorExpanded] = useState(false);
   const [hiddenMessageIndices, setHiddenMessageIndices] = useState<Set<number>>(
     new Set()
   );
@@ -119,10 +157,8 @@ const RunView: React.FC<RunViewProps> = ({
       lastBrowserAddressMsg &&
       lastBrowserAddressMsg.config.metadata?.novnc_port !== novncPort
     ) {
-      setNovncPort(lastBrowserAddressMsg.config.metadata?.novnc_port);
-      // Show DetailViewer when novncPort becomes available
-      setShowDetailViewer(true);
-      setIsDetailViewerMinimized(false);
+      setLocalNovncPort(lastBrowserAddressMsg.config.metadata?.novnc_port);
+      // Removed auto-show logic - now controlled manually
     }
   }, [run.messages]);
 
@@ -536,36 +572,72 @@ const RunView: React.FC<RunViewProps> = ({
 
   // Add this effect to handle scrolling when status changes
   useEffect(() => {
-    if (run.status === "awaiting_input" && buttonsContainerRef.current) {
-      // Use a small delay to ensure the DOM has updated
+    if (run.status === "awaiting_input" && threadContainerRef.current) {
+      // Scroll to bottom of messages when awaiting input
       setTimeout(() => {
-        buttonsContainerRef.current?.scrollIntoView({
-          behavior: "smooth",
-          block: "nearest",
-        });
+        const container = threadContainerRef.current;
+        if (container) {
+          container.scrollTop = container.scrollHeight;
+        }
       }, 100);
     }
   }, [run.status]);
 
   return (
-    <div
-      className="flex w-full gap-4 h-full overflow-y-auto scroll"
-      ref={threadContainerRef}
-    >
+    <div className="flex w-full gap-4 h-full">
       {/* Messages section */}
       <div
         className={`items-start relative flex flex-col h-full ${
-          showDetailViewer &&
-          novncPort !== undefined &&
-          !isDetailViewerMinimized
-            ? detailViewerExpanded
+          (showDetailViewer &&
+            novncPort !== undefined &&
+            !isDetailViewerMinimized) ||
+          (showCodeEditor &&
+            hasCode &&
+            !isCodeEditorMinimized)
+            ? (detailViewerExpanded || codeEditorExpanded)
               ? "w-0"
               : "w-[40%]"
             : "w-full"
         } transition-all duration-300`}
       >
-        {/* Thread Section - use flex-1 for height, but remove overflow-y-auto */}
-        <div className="w-full flex-1">
+        {/* Thread Section - scrollable messages area only */}
+        <div 
+          className="w-full flex-1 overflow-y-auto scroll"
+          ref={threadContainerRef}
+        >
+          {/* 显示临时消息 - 只在没有真实消息时显示 */}
+          {pendingMessage && localMessages.length === 0 && (
+            <div className="w-full">
+              <RenderMessage
+                message={{
+                  source: "user",
+                  content: pendingMessage,
+                  metadata: { type: "user_message" },
+                  version: 0,
+                }}
+                                 sessionId={0}
+                messageIdx={-1}
+                isLast={true}
+                isEditable={false}
+                hidden={false}
+                is_step_repeated={false}
+                is_step_failed={false}
+                onSavePlan={() => {}}
+                onImageClick={() => {}}
+                onToggleHide={() => {}}
+                runStatus={run.status}
+                onOpenCodeEditor={() => {}}
+                novncPort={novncPort}
+                showDetailViewer={showDetailViewer}
+                onToggleDetailViewer={onToggleDetailViewer}
+                showCodeEditor={showCodeEditor}
+                isCodeEditorMinimized={isCodeEditorMinimized}
+                onToggleCodeEditor={onToggleCodeEditor}
+                onMinimizeCodeEditor={() => setIsCodeEditorMinimized?.(true)}
+              />
+            </div>
+          )}
+          
           {localMessages.length > 0 &&
             localMessages.map((msg: Message, idx: number) => {
               const isCurrentMessagePlan =
@@ -611,44 +683,51 @@ const RunView: React.FC<RunViewProps> = ({
                       isLatestPlan ? handleRegeneratePlan : undefined
                     }
                     forceCollapsed={shouldForceCollapse}
+                    onOpenCodeEditor={(code: string) => {
+                      onOpenCodeInEditor?.(code);
+                    }}
+                    novncPort={novncPort}
+                    showDetailViewer={showDetailViewer}
+                    onToggleDetailViewer={onToggleDetailViewer}
+                    showCodeEditor={showCodeEditor}
+                    isCodeEditorMinimized={isCodeEditorMinimized}
+                    onToggleCodeEditor={onToggleCodeEditor}
+                    onMinimizeCodeEditor={() => setIsCodeEditorMinimized?.(true)}
                   />
                 </div>
               );
             })}
+        </div>
 
-          {/* Status Icon at top */}
-          <div className="pt-2 pb-2 flex-shrink-0">
-            <div className="inline-block">
-              {getStatusIcon(
-                run.status,
-                run.error_message,
-                run.team_result?.task_result?.stop_reason,
-                run.input_request
-              )}
-            </div>
-          </div>
-
-          {/* Approval Buttons after status */}
-          <div className="flex-shrink-0">
-            <ApprovalButtons
-              status={run.status}
-              inputRequest={run.input_request}
-              isPlanMessage={isPlanMsg}
-              onApprove={onApprove}
-              onDeny={onDeny}
-              onAcceptPlan={onAcceptPlan}
-              onRegeneratePlan={onRegeneratePlan}
-            />
+        {/* Status Icon - fixed between messages and input */}
+        <div className="pt-2 pb-2 flex-shrink-0 border-t border-accent bg-background">
+          <div className="inline-block w-full">
+            {getStatusIcon(
+              run.status,
+              run.error_message,
+              run.team_result?.task_result?.stop_reason,
+              run.input_request
+            )}
           </div>
         </div>
 
-        {/* ChatInput - use sticky positioning to keep at bottom with full width */}
+        {/* Approval Buttons - fixed between status and input */}
+        <div className="flex-shrink-0 bg-background">
+          <ApprovalButtons
+            status={run.status}
+            inputRequest={run.input_request}
+            isPlanMessage={isPlanMsg}
+            onApprove={onApprove}
+            onDeny={onDeny}
+            onAcceptPlan={onAcceptPlan}
+            onRegeneratePlan={onRegeneratePlan}
+          />
+        </div>
+
+        {/* ChatInput - fixed at bottom */}
         <div
           ref={buttonsContainerRef}
-          className="sticky bottom-0 flex-shrink-0 w-full bg-background"
-          style={{
-            width: "100%", // Always take full width of parent
-          }}
+          className="flex-shrink-0 w-full bg-background"
         >
           <ChatInput
             ref={chatInputRef}
@@ -676,16 +755,7 @@ const RunView: React.FC<RunViewProps> = ({
         </div>
       </div>
 
-      {/* Detail Viewer section */}
-      {isDetailViewerMinimized && novncPort !== undefined && (
-        <button
-          onClick={() => setIsDetailViewerMinimized(false)}
-          className="self-start sticky top-0 h-full inline-flex text-magenta-800 hover:text-magenta-900 cursor-pointer"
-          title="Show browser"
-        >
-          <Globe2 size={20} />
-        </button>
-      )}
+
 
       {showDetailViewer &&
         novncPort !== undefined &&
@@ -693,7 +763,9 @@ const RunView: React.FC<RunViewProps> = ({
           <div
             className={`${
               detailViewerExpanded ? "w-full" : "w-[60%]"
-            } self-start sticky top-0 h-full`}
+            } self-start sticky top-0 h-full transform transition-all duration-300 ease-in-out ${
+              showDetailViewer ? "translate-x-0 opacity-100" : "translate-x-full opacity-0"
+            }`}
           >
             <div className="h-full flex-1">
               <DetailViewer
@@ -718,6 +790,46 @@ const RunView: React.FC<RunViewProps> = ({
                 onTabChange={setDetailViewerTab}
                 detailViewerContainerId={DETAIL_VIEWER_CONTAINER_ID}
                 onInputResponse={onInputResponse}
+              />
+            </div>
+          </div>
+        )}
+
+      {/* Code IDE Editor section */}
+      {(() => {
+        console.log('##### CodeEditor render conditions #####', {
+          showCodeEditor,
+          hasCode,
+          isCodeEditorMinimized,
+          shouldShow: showCodeEditor && hasCode && !isCodeEditorMinimized
+        });
+        return null;
+      })()}
+      {showCodeEditor &&
+        hasCode &&
+        !isCodeEditorMinimized && (
+          <div
+            className={`${
+              codeEditorExpanded ? "w-full" : "w-[60%]"
+            } self-start sticky top-0 h-full transform transition-all duration-300 ease-in-out ${
+              showCodeEditor ? "translate-x-0 opacity-100" : "translate-x-full opacity-0"
+            }`}
+          >
+            <div className="h-full flex-1">
+              <CodeIDEEditor
+                code={currentCode}
+                language="python"
+                onMinimize={() => setIsCodeEditorMinimized?.(true)}
+                onToggleExpand={() =>
+                  setCodeEditorExpanded(!codeEditorExpanded)
+                }
+                isExpanded={codeEditorExpanded}
+                onRun={onCodeRun}
+                onTest={onCodeTest}
+                terminalOutput=""
+                isRunning={false}
+                isTesting={false}
+                readOnly={false}
               />
             </div>
           </div>

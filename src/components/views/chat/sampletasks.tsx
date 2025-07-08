@@ -5,12 +5,12 @@ interface SampleTasksProps {
 }
 
 const SAMPLE_TASKS = [
-  "When does the post office near me close today?",
-  "Find the latest publications from the the Microsoft Research AI Frontiers Lab on Human-Agent interaction",
-  "Which commit of Microsoft/markitdown repo introduced MCP support?",
-  "Can you make a Markdown file with python that summarizes the Microsoft AutoGen repo?",
-  "Order me a custom pizza from Tangle Town Pub with sausage, pineapple, and black olives",
-  "Search arXiv for the latest papers on computer use agents",
+  "今天我附近的邮局几点关门？",
+  "查找微软研究院AI前沿实验室关于人机交互的最新论文",
+  "Microsoft/markitdown仓库的哪个提交引入了MCP支持？",
+  "用Python制作一个Markdown文件，总结Microsoft AutoGen仓库的内容",
+  "帮我在Tangle Town Pub订一个自定义披萨，要香肠、菠萝和黑橄榄",
+  "在arXiv上搜索关于计算机使用代理的最新论文",
 ];
 
 const SampleTasks: React.FC<SampleTasksProps> = ({ onSelect }) => {
@@ -25,7 +25,7 @@ const SampleTasks: React.FC<SampleTasksProps> = ({ onSelect }) => {
   }, []);
 
   const isLargeScreen = windowWidth >= 1024; // lg breakpoint
-  const tasksPerRow = windowWidth >= 640 ? 2 : 1; // 2 columns on sm, 1 on mobile
+  const tasksPerRow = windowWidth >= 1024 ? 3 : windowWidth >= 640 ? 2 : 1; // 3 columns on lg, 2 on sm, 1 on mobile
   const defaultVisibleTasks = tasksPerRow * 2;
   const maxVisibleTasks = isLargeScreen
     ? SAMPLE_TASKS.length
@@ -39,18 +39,18 @@ const SampleTasks: React.FC<SampleTasksProps> = ({ onSelect }) => {
   return (
     <div className="mb-6">
       <div className="mt-4 mb-2 text-sm opacity-70 text-secondary">
-        or try a sample task from below{" "}
+        或者参考以下的示例任务{" "}
       </div>
       <div className="flex flex-col gap-2 w-full">
-        <div className="inline-flex flex-wrap justify-center gap-2 w-full">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 w-full">
           {visibleTasks.map((task, idx) => (
             <button
               key={idx}
-              className="max-w-80 rounded px-4 py-2 text-left transition-colors text-primary hover:bg-secondary bg-tertiary"
+              className="rounded px-4 py-2 text-left transition-colors text-primary hover:bg-secondary bg-tertiary min-h-[3rem] flex items-center"
               onClick={() => onSelect(task)}
               type="button"
             >
-              {task}
+              <span className="text-sm leading-relaxed">{task}</span>
             </button>
           ))}
         </div>

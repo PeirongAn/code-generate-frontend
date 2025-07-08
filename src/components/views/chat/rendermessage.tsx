@@ -9,6 +9,8 @@ import {
   CheckCircle,
   RefreshCw,
   Clock,
+  Code2,
+  ExternalLink,
 } from "lucide-react";
 import {
   AgentMessageConfig,
@@ -40,6 +42,16 @@ interface MessageProps {
   onRegeneratePlan?: () => void;
   runStatus?: string;
   forceCollapsed?: boolean;
+  onOpenCodeEditor?: (code: string) => void;
+  // 浏览器控制相关 props
+  novncPort?: string;
+  showDetailViewer?: boolean;
+  onToggleDetailViewer?: () => void;
+  // 代码编辑器控制相关 props
+  showCodeEditor?: boolean;
+  isCodeEditorMinimized?: boolean;
+  onToggleCodeEditor?: () => void;
+  onMinimizeCodeEditor?: () => void;
 }
 
 interface RenderPlanProps {
@@ -512,6 +524,45 @@ export const messageUtils = {
     return metadata?.type === "step_execution";
   },
 
+  isCodeMessage(message: AgentMessageConfig): boolean {
+    // Check if metadata type is "code"
+    if (message.metadata?.type === "code") {
+      return true;
+    }
+    
+    // Check if content contains code patterns
+    if (typeof message.content === "string") {
+      return (
+        message.content.includes("```python") ||
+        message.content.includes("def ") ||
+        message.content.includes("import ")
+      );
+    }
+    
+    return false;
+  },
+
+  isBrowserMessage(message: AgentMessageConfig): boolean {
+    const content = String(message.content);
+    
+    // Check if message has browser metadata
+    if (message.metadata?.type === "browser_address" || message.metadata?.type === "browser_screenshot") {
+      return true;
+    }
+    
+    // Check if content contains browser-related keywords
+    if (content.includes("browser") || content.includes("navigate") || content.includes("click") || content.includes("screenshot")) {
+      return true;
+    }
+    
+    // Check for URLs
+    if (content.includes("http://") || content.includes("https://") || content.includes("localhost:")) {
+      return true;
+    }
+    
+    return false;
+  },
+
   findUserPlan(content: unknown): IPlanStep[] {
     if (typeof content !== "string") return [];
     try {
@@ -626,6 +677,95 @@ const RenderUserMessage: React.FC<{
 
 RenderUserMessage.displayName = "RenderUserMessage";
 
+// Code preview component
+const RenderCodePreview: React.FC<{
+  content: string;
+  onOpenCodeEditor?: (code: string) => void;
+}> = memo(({ content, onOpenCodeEditor }) => {
+  const extractCodeFromContent = (content: string): string => {
+    // Try to extract code from markdown code blocks
+    const codeBlockMatch = content.match(/```(?:python)?\n?([\s\S]*?)```/);
+    if (codeBlockMatch) {
+      return codeBlockMatch[1].trim();
+    }
+    
+    // If no code block, check if content looks like code
+    if (content.includes("def ") || content.includes("import ") || content.includes("class ")) {
+      return content;
+    }
+    
+    return "";
+  };
+
+  const extractedCode = extractCodeFromContent(content);
+  
+  if (!extractedCode) {
+    // If no code found, render as normal markdown
+    return (
+      <div className="break-words">
+        <MarkdownRenderer content={content} indented={true} />
+      </div>
+    );
+  }
+
+  // Show preview of first few lines
+  const lines = extractedCode.split('\n');
+  const previewLines = lines.slice(0, 5); // Show first 5 lines
+  const hasMore = lines.length > 5;
+  const previewCode = previewLines.join('\n') + (hasMore ? '\n...' : '');
+
+  return (
+    <div className="space-y-3">
+      {/* Render any text before the code block */}
+      {content !== extractedCode && (
+        <div className="break-words">
+          <MarkdownRenderer 
+            content={content.replace(/```(?:python)?\n?[\s\S]*?```/, '[代码块]')} 
+            indented={true} 
+          />
+        </div>
+      )}
+      
+      {/* Code preview */}
+      <div className="bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-3 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
+          <div className="flex items-center gap-2">
+            <Code2 size={16} className="text-blue-600 dark:text-blue-400" />
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              Python 代码
+            </span>
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              {lines.length} 行
+            </span>
+          </div>
+        </div>
+        
+        {/* Code preview */}
+        <div className="relative">
+          <pre className="p-3 text-sm font-mono bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 overflow-x-auto">
+            <code>{previewCode}</code>
+          </pre>
+          
+          {/* Gradient overlay if there's more content */}
+          {hasMore && (
+            <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-white dark:from-gray-900 to-transparent pointer-events-none" />
+          )}
+        </div>
+        
+        {/* Code statistics */}
+        <div className="px-3 py-2 bg-gray-50 dark:bg-gray-800 border-t border-gray-200 dark:border-gray-700">
+          <div className="text-xs text-gray-500 dark:text-gray-400">
+            {lines.length} 行代码 {hasMore && `(显示前 ${previewLines.length} 行)`}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+RenderCodePreview.displayName = "RenderCodePreview";
+
 // Main component
 export const RenderMessage: React.FC<MessageProps> = memo(
   ({
@@ -644,6 +784,14 @@ export const RenderMessage: React.FC<MessageProps> = memo(
     onToggleHide,
     onRegeneratePlan,
     forceCollapsed = false,
+    onOpenCodeEditor,
+    novncPort,
+    showDetailViewer = false,
+    onToggleDetailViewer,
+    showCodeEditor = false,
+    isCodeEditorMinimized = false,
+    onToggleCodeEditor,
+    onMinimizeCodeEditor,
   }) => {
     if (!message) return null;
     if (message.metadata?.type === "browser_address") return null;
@@ -749,6 +897,11 @@ export const RenderMessage: React.FC<MessageProps> = memo(
                 <div className="break-words">
                   {message.metadata?.type === "file" ? (
                     <RenderFile message={message} />
+                  ) : messageUtils.isCodeMessage(message) ? (
+                    <RenderCodePreview
+                      content={String(parsedContent.text)}
+                      onOpenCodeEditor={onOpenCodeEditor}
+                    />
                   ) : (
                     <MarkdownRenderer
                       content={String(parsedContent.text)}
@@ -762,6 +915,71 @@ export const RenderMessage: React.FC<MessageProps> = memo(
               ))}
           </div>
         </div>
+        
+        {/* Control buttons for browser and code actions */}
+        {!isUser && !isUserProxy && (
+          <div className="mt-2 flex justify-start gap-2">
+            {/* Browser control button */}
+            {messageUtils.isBrowserMessage(message) && novncPort && onToggleDetailViewer && (
+              <button
+                type="button"
+                onClick={onToggleDetailViewer}
+                className={`inline-flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors ${
+                  showDetailViewer
+                    ? "bg-magenta-800 hover:bg-magenta-900 text-white"
+                    : "bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-300"
+                }`}
+              >
+                <Globe2 size={14} />
+                {showDetailViewer ? "隐藏浏览器" : "显示浏览器"}
+              </button>
+            )}
+            
+            {/* Code editor control button */}
+            {messageUtils.isCodeMessage(message) && (onOpenCodeEditor || onToggleCodeEditor) && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (showCodeEditor && !isCodeEditorMinimized) {
+                    // If code editor is showing (not minimized), minimize it
+                    if (onMinimizeCodeEditor) {
+                      onMinimizeCodeEditor();
+                    }
+                  } else if (onOpenCodeEditor) {
+                    // If code editor is not showing, open it
+                    const extractCodeFromContent = (content: string): string => {
+                      console.log('##### get content #####', content)
+                      // Try to extract code from markdown code blocks
+                      const codeBlockMatch = content.match(/```(?:python)?\n?([\s\S]*?)```/);
+                      if (codeBlockMatch) {
+                        return codeBlockMatch[1].trim();
+                      }
+                      
+                      // If no code block, check if content looks like code
+                      if (content.includes("def ") || content.includes("import ") || content.includes("class ")) {
+                        return content;
+                      }
+                      
+                      return content;
+                    };
+                    
+                    const codeContent = extractCodeFromContent(String(parsedContent.text));
+                    console.log('##### get codeContent #####', codeContent)
+                    onOpenCodeEditor(codeContent);
+                  }
+                }}
+                className={`inline-flex items-center gap-2 px-3 py-1.5 text-sm rounded-md transition-colors ${
+                  showCodeEditor && !isCodeEditorMinimized
+                    ? "bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-300"
+                    : "bg-blue-600 hover:bg-blue-700 text-white"
+                }`}
+              >
+                <Code2 size={14} />
+                {showCodeEditor && !isCodeEditorMinimized ? "隐藏代码编辑器" : "显示代码编辑器"}
+              </button>
+            )}
+          </div>
+        )}
       </div>
     );
   }

@@ -98,6 +98,19 @@ export default function ChatView({
     React.useState(false);
   const [showDetailViewer, setShowDetailViewer] = React.useState(false);
   const [hasFinalAnswer, setHasFinalAnswer] = React.useState(false);
+  const [novncPort, setNovncPort] = React.useState<string | undefined>();
+  const [showCodeEditor, setShowCodeEditor] = React.useState(false);
+  const [isCodeEditorMinimized, setIsCodeEditorMinimized] = React.useState(false);
+  const [currentCode, setCurrentCode] = React.useState("");
+  const [hasCode, setHasCode] = React.useState(false);
+  const [pendingMessage, setPendingMessage] = React.useState<string | null>(null);
+
+  console.log('##### ChatView rendering with states #####', {
+    hasCode,
+    showCodeEditor,
+    currentCode: currentCode?.substring(0, 50) + (currentCode?.length > 50 ? '...' : ''),
+    sessionId: session?.id
+  });
 
   // Context and config
   const [activeSocket, setActiveSocket] = React.useState<WebSocket | null>(
@@ -160,6 +173,20 @@ export default function ChatView({
         processedPlanIds.clear();
         setUpdatedPlan([]);
 
+        // Reset DetailViewer state
+        setShowDetailViewer(false);
+        setIsDetailViewerMinimized(false);
+        setNovncPort(undefined);
+
+        // Reset CodeEditor state
+        setShowCodeEditor(false);
+        setIsCodeEditorMinimized(false);
+        setCurrentCode("");
+        setHasCode(false);
+        
+        // Reset pending message state
+        setPendingMessage(null);
+
         // Reset socket
         setActiveSocket(null);
         activeSocketRef.current = null;
@@ -169,6 +196,51 @@ export default function ChatView({
         if (latestRun) {
           setCurrentRun(latestRun);
           setNoMessagesYet(latestRun.messages.length === 0);
+
+          // Scan existing messages to restore state
+          if (latestRun.messages && latestRun.messages.length > 0) {
+            let foundCode = false;
+            let foundBrowser = false;
+            let latestCode = "";
+            let latestNovncPort: string | undefined;
+
+            for (const message of latestRun.messages) {
+              // Check for browser messages
+              if (message.config.metadata?.type === "browser_address" && 
+                  message.config.metadata?.novnc_port) {
+                foundBrowser = true;
+                latestNovncPort = message.config.metadata.novnc_port;
+              }
+
+              // Check for code messages
+              if (message.config.metadata?.type === "code" ||
+                  (typeof message.config.content === "string" && 
+                   (message.config.content.includes("```python") || 
+                    message.config.content.includes("def ") ||
+                    message.config.content.includes("import ")))) {
+                foundCode = true;
+                // Extract code from the message
+                if (typeof message.config.content === "string") {
+                  const codeBlockMatch = message.config.content.match(/```(?:python)?\n?([\s\S]*?)```/);
+                  if (codeBlockMatch) {
+                    latestCode = codeBlockMatch[1].trim();
+                  } else if (message.config.content.includes("def ") || 
+                            message.config.content.includes("import ")) {
+                    latestCode = message.config.content;
+                  }
+                }
+              }
+            }
+
+            // Restore state based on found content
+            if (foundCode) {
+              setHasCode(true);
+              setCurrentCode(latestCode);
+            }
+            if (foundBrowser && latestNovncPort) {
+              setNovncPort(latestNovncPort);
+            }
+          }
 
           if (latestRun.id) {
             setupWebSocket(latestRun.id, false, true);
@@ -327,6 +399,38 @@ export default function ChatView({
             current.id,
             session.id
           );
+
+          // Check for browser_address message and extract novncPort
+          if (newMessage.config.metadata?.type === "browser_address" && 
+              newMessage.config.metadata?.novnc_port) {
+            const port = newMessage.config.metadata.novnc_port;
+            if (port !== novncPort) {
+              setNovncPort(port);
+            }
+          }
+
+          // Check for code messages and extract code content
+          if (newMessage.config.metadata?.type === "code" ||
+              (typeof newMessage.config.content === "string" && 
+               (newMessage.config.content.includes("```python") || 
+                newMessage.config.content.includes("def ") ||
+                newMessage.config.content.includes("import ")))) {
+            setHasCode(true);
+            // Extract code from markdown code blocks or direct content
+            let codeContent = "";
+            if (typeof newMessage.config.content === "string") {
+              const codeBlockMatch = newMessage.config.content.match(/```(?:python)?\n?([\s\S]*?)```/);
+              if (codeBlockMatch) {
+                codeContent = codeBlockMatch[1].trim();
+              } else if (newMessage.config.content.includes("def ") || 
+                        newMessage.config.content.includes("import ")) {
+                codeContent = newMessage.config.content;
+              }
+            }
+            if (codeContent && codeContent !== currentCode) {
+              setCurrentCode(codeContent);
+            }
+          }
 
           return {
             ...current,
@@ -588,6 +692,9 @@ export default function ChatView({
   ) => {
     setError(null);
     setNoMessagesYet(false);
+    
+    // 立即显示用户发送的消息
+    setPendingMessage(query);
 
     console.log("Running task:", query, files);
 
@@ -735,6 +842,13 @@ export default function ChatView({
       }
     }
   }, [localPlan, planProcessed, visible, session?.id, currentRun]);
+
+  // 清除临时消息当收到服务端响应时
+  React.useEffect(() => {
+    if (currentRun?.messages && currentRun.messages.length > 0) {
+      setPendingMessage(null);
+    }
+  }, [currentRun?.messages]);
 
   const processPlan = async (newPlan: IPlan) => {
     if (!currentRun || !session?.id) return;
@@ -945,6 +1059,43 @@ export default function ChatView({
     }
   };
 
+  // Add handler for toggling DetailViewer
+  const handleToggleDetailViewer = () => {
+    setShowDetailViewer(!showDetailViewer);
+    if (!showDetailViewer) {
+      setIsDetailViewerMinimized(false);
+    }
+  };
+
+  // Add handler for toggling CodeEditor
+  const handleToggleCodeEditor = () => {
+    setShowCodeEditor(!showCodeEditor);
+    if (!showCodeEditor) {
+      setIsCodeEditorMinimized(false);
+    }
+  };
+
+  // Add handler for opening code in editor
+  const handleOpenCodeInEditor = (code: string) => {
+    console.log('##### handleOpenCodeInEditor called with code #####', code);
+    setCurrentCode(code);
+    setShowCodeEditor(true);
+    setIsCodeEditorMinimized(false);
+    setHasCode(true); // 确保 hasCode 为 true
+    console.log('##### States set: showCodeEditor=true, hasCode=true, isCodeEditorMinimized=false #####');
+  };
+
+  // Add handlers for code execution
+  const handleCodeRun = (code: string) => {
+    console.log('Running code:', code);
+    // TODO: Implement code execution
+  };
+
+  const handleCodeTest = (code: string) => {
+    console.log('Testing code:', code);
+    // TODO: Implement code testing
+  };
+
   if (!visible) {
     return null;
   }
@@ -985,7 +1136,8 @@ export default function ChatView({
         >
           <div
             className={`${
-              showDetailViewer && !isDetailViewerMinimized
+              (showDetailViewer && !isDetailViewerMinimized) || 
+              (showCodeEditor && !isCodeEditorMinimized)
                 ? "w-full"
                 : "max-w-full md:max-w-5xl lg:max-w-6xl xl:max-w-7xl"
             } mx-auto px-4 sm:px-6 md:px-8 h-full ${
@@ -1016,6 +1168,18 @@ export default function ChatView({
                     chatInputRef={chatInputRef}
                     onExecutePlan={handleExecutePlan}
                     enable_upload={false} // Or true if needed
+                    novncPort={novncPort}
+                    onToggleDetailViewer={handleToggleDetailViewer}
+                    hasCode={hasCode}
+                    showCodeEditor={showCodeEditor}
+                    onToggleCodeEditor={handleToggleCodeEditor}
+                    currentCode={currentCode}
+                    onOpenCodeInEditor={handleOpenCodeInEditor}
+                    onCodeRun={handleCodeRun}
+                    onCodeTest={handleCodeTest}
+                    isCodeEditorMinimized={isCodeEditorMinimized}
+                    setIsCodeEditorMinimized={setIsCodeEditorMinimized}
+                    pendingMessage={pendingMessage}
                   />
                 )}
               </>
@@ -1032,7 +1196,7 @@ export default function ChatView({
               } mx-auto px-4 sm:px-6 md:px-8`}
             >
               <div className="text-secondary text-lg mb-6">
-                Enter a message to get started
+                输入需求开始，Enter 提交
               </div>
 
               <div className="w-full">

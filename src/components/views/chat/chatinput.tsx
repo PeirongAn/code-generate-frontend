@@ -812,6 +812,8 @@ const ChatInput = React.forwardRef<{ focus: () => void }, ChatInputProps>(
             {error.message}
           </div>
         )}
+
+
       </div>
     );
   }
