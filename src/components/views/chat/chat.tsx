@@ -91,6 +91,7 @@ export default function ChatView({
 
   // Core state
   const [currentRun, setCurrentRun] = React.useState<Run | null>(null);
+  const [sessionRunId, setSessionRunId] = React.useState<string | null>(null); // 固定的session run ID
   const [messageApi, contextHolder] = message.useMessage();
   const [noMessagesYet, setNoMessagesYet] = React.useState(true);
   const chatContainerRef = React.useRef<HTMLDivElement | null>(null);
@@ -103,14 +104,6 @@ export default function ChatView({
   const [isCodeEditorMinimized, setIsCodeEditorMinimized] = React.useState(false);
   const [currentCode, setCurrentCode] = React.useState("");
   const [hasCode, setHasCode] = React.useState(false);
-  const [pendingMessage, setPendingMessage] = React.useState<string | null>(null);
-
-  console.log('##### ChatView rendering with states #####', {
-    hasCode,
-    showCodeEditor,
-    currentCode: currentCode?.substring(0, 50) + (currentCode?.length > 50 ? '...' : ''),
-    sessionId: session?.id
-  });
 
   // Context and config
   const [activeSocket, setActiveSocket] = React.useState<WebSocket | null>(
@@ -119,6 +112,8 @@ export default function ChatView({
   const [teamConfig, setTeamConfig] = React.useState<TeamConfig | null>(
     defaultTeamConfig
   );
+
+  const [messages, setMessages] = React.useState<Message[]>([]);
 
   const inputTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
   const activeSocketRef = React.useRef<WebSocket | null>(null);
@@ -135,6 +130,12 @@ export default function ChatView({
 
   // Replace stepTitles state with currentPlan state
   const [currentPlan, setCurrentPlan] = React.useState<StepProgress["plan"]>();
+  const heartbeatIntervalRef = React.useRef<NodeJS.Timeout | null>(null);
+
+  // 生成固定的session run ID
+  const generateSessionRunId = (): string => {
+    return `session_${session?.id || 'default'}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  };
 
   // Create a Message object from AgentMessageConfig
   const createMessage = (
@@ -150,12 +151,81 @@ export default function ChatView({
     user_id: user?.email || undefined,
   });
 
+  // Convert backend message format to frontend AgentMessageConfig format
+  const convertBackendMessageToAgentConfig = (backendMessage: any): AgentMessageConfig => {
+    // 处理不同类型的消息
+    switch (backendMessage.type) {
+      case "user_input":
+        return {
+          source: "user",
+          content: backendMessage.content,
+          metadata: {
+            type: "user_input",
+            ...backendMessage.metadata,
+          },
+        };
+      
+      case "agent_error":
+        return {
+          source: "assistant",
+          content: backendMessage.content,
+          metadata: {
+            type: "agent_error",
+            agent_type: backendMessage.metadata?.agent_type || "unknown",
+            error: backendMessage.metadata?.error,
+            success: backendMessage.metadata?.success || false,
+          },
+        };
+      
+      default:
+        // 如果已经是正确的格式，直接返回
+        if (backendMessage.config) {
+          return backendMessage.config;
+        }
+        
+        // 默认处理：尝试转换为基本的文本消息格式
+        return {
+          source: backendMessage.role || "assistant",
+          content: backendMessage.content,
+          metadata: backendMessage.metadata || {},
+        };
+    }
+  };
+
+  // Convert backend message to frontend Message format
+  const convertBackendMessageToMessage = (backendMessage: any, sessionId: number): Message => {
+    const config = convertBackendMessageToAgentConfig(backendMessage);
+    
+    return {
+      created_at: backendMessage.created_at || new Date().toISOString(),
+      updated_at: backendMessage.updated_at || new Date().toISOString(),
+      config,
+      session_id: sessionId,
+      run_id: backendMessage.run_id,
+      user_id: user?.email || undefined,
+    };
+  };
+
   const loadSessionRun = async () => {
     if (!session?.id || !user?.email) return null;
 
     try {
       const response = await sessionAPI.getSessionRuns(session.id, user?.email);
       const latestRun = response.runs[response.runs.length - 1];
+      
+              // Convert backend message format to frontend format
+        if (latestRun && latestRun.messages && session.id) {
+          latestRun.messages = latestRun.messages.map((msg: any) => {
+            // If message is already in correct format, return as is
+            if (msg.config) {
+              return msg;
+            }
+            
+            // Convert backend message format to frontend format
+            return convertBackendMessageToMessage(msg, session.id!);
+          });
+        }
+      
       return latestRun;
     } catch (error) {
       console.error("Error loading session runs:", error);
@@ -184,17 +254,21 @@ export default function ChatView({
         setCurrentCode("");
         setHasCode(false);
         
-        // Reset pending message state
-        setPendingMessage(null);
+        setMessages([]);
 
         // Reset socket
         setActiveSocket(null);
         activeSocketRef.current = null;
 
+        // 生成固定的session run ID（只在session初始化时生成一次）
+        const fixedRunId = generateSessionRunId();
+        setSessionRunId(fixedRunId);
+
         // Only load data if component is visible
         const latestRun = await loadSessionRun();
         if (latestRun) {
           setCurrentRun(latestRun);
+          setMessages(latestRun.messages || []);
           setNoMessagesYet(latestRun.messages.length === 0);
 
           // Scan existing messages to restore state
@@ -205,8 +279,11 @@ export default function ChatView({
             let latestNovncPort: string | undefined;
 
             for (const message of latestRun.messages) {
+              if(!message?.config?.metadata) {
+                continue;
+              }
               // Check for browser messages
-              if (message.config.metadata?.type === "browser_address" && 
+              if (message?.config?.metadata?.type === "browser_address" && 
                   message.config.metadata?.novnc_port) {
                 foundBrowser = true;
                 latestNovncPort = message.config.metadata.novnc_port;
@@ -242,8 +319,8 @@ export default function ChatView({
             }
           }
 
-          if (latestRun.id) {
-            setupWebSocket(latestRun.id, false, true);
+          if (fixedRunId) {
+            setupWebSocket(fixedRunId, false, true);
           }
         } else {
           setError({
@@ -253,6 +330,8 @@ export default function ChatView({
         }
       } else {
         setCurrentRun(null);
+        setSessionRunId(null);
+        setMessages([]);
       }
     };
 
@@ -358,6 +437,8 @@ export default function ChatView({
           if (message.type === "system" && message.status && session.id) {
             // Update the run status even when not visible
             onRunStatusChange(session.id, message.status as BaseRunStatus);
+          } else if (message.type === "message" || message.type === "system" || message.type === 'error' || message.type === 'input_request' || message.type === 'completion' || message.type === 'result') {
+            handleWebSocketMessage(message);
           }
         } catch (error) {
           console.error("WebSocket message parsing error:", error);
@@ -373,10 +454,72 @@ export default function ChatView({
   }, [session?.id, visible, activeSocket, onRunStatusChange]);
 
   const handleWebSocketMessage = (message: WebSocketMessage) => {
-    setCurrentRun((current: Run | null) => {
-      if (!current || !session?.id) return null;
+    if (message.type === "message" && message.data && session?.id) {
+      const newMessage = createMessage(
+        message.data as AgentMessageConfig,
+        sessionRunId || generateSessionRunId(),
+        session.id
+      );
 
-      console.log("######## WebSocket message: ", message);
+      setMessages((currentMessages) => {
+        const messageType = newMessage.config?.metadata?.type;
+
+        if (messageType === "thinking" || messageType === "response") {
+          const runId = newMessage.config.metadata?.run_id || "default";
+
+          const lastMessage = currentMessages[currentMessages.length - 1];
+          const lastMessageType = lastMessage?.config?.metadata?.type;
+          const lastMessageRunId =
+            lastMessage?.config?.metadata?.run_id || "default";
+
+          if (
+            lastMessage &&
+            (lastMessageType === "thinking" ||
+              lastMessageType === "response") &&
+            lastMessageRunId === runId &&
+            lastMessageType === messageType
+          ) {
+            const updatedLastMessage = {
+              ...lastMessage,
+              config: {
+                ...lastMessage.config,
+                content:
+                  String(lastMessage.config.content || "") +
+                  String(newMessage.config.content || ""),
+                metadata: {
+                  ...lastMessage.config.metadata,
+                  is_complete: newMessage.config.metadata?.is_complete,
+                },
+              },
+            };
+            return [...currentMessages.slice(0, -1), updatedLastMessage];
+          }
+        }
+        return [...currentMessages, newMessage];
+      });
+    }
+
+    setCurrentRun((current: Run | null) => {
+      if (!current || !session?.id) {
+        if (message.type === "system" && message.status && session?.id) {
+          return {
+            id: sessionRunId || '',
+            session_id: session.id,
+            status: message.status as BaseRunStatus,
+            created_at: new Date().toISOString(),
+            messages: [],
+            team_config: teamConfig || defaultTeamConfig,
+            task: {
+              source: "user",
+              content: "",
+              metadata: { type: "user_message" },
+            },
+            team_result: null,
+          };
+        }
+        return null;
+      }
+
       switch (message.type) {
         case "error":
           if (inputTimeoutRef.current) {
@@ -389,14 +532,18 @@ export default function ChatView({
             activeSocketRef.current = null;
           }
           console.log("Error: ", message.error);
+          return {
+            ...current,
+            status: "error",
+            error_message: message.error
+          }
 
         case "message":
           if (!message.data) return current;
 
-          // Create new Message object from websocket data
           const newMessage = createMessage(
             message.data as AgentMessageConfig,
-            current.id,
+            sessionRunId || generateSessionRunId(),
             session.id
           );
 
@@ -438,8 +585,6 @@ export default function ChatView({
           };
 
         case "input_request":
-          //console.log("InputRequest: " + JSON.stringify(message))
-
           let input_request: InputRequest;
           switch (message.input_type) {
             case "text_input":
@@ -693,21 +838,28 @@ export default function ChatView({
     setError(null);
     setNoMessagesYet(false);
     
-    // 立即显示用户发送的消息
-    setPendingMessage(query);
+    if (session?.id) {
+      const userMessage = createMessage(
+        {
+          source: "user",
+          content: query,
+          metadata: { type: "user_message" },
+        },
+        sessionRunId || generateSessionRunId(),
+        session.id
+      );
+      userMessage.id = Date.now();
+      setMessages((prev) => [...prev, userMessage]);
+    }
 
     console.log("Running task:", query, files);
 
     try {
-      // Make sure run is setup first
-      let run = currentRun;
-      if (!run) {
-        run = await loadSessionRun();
-        if (run) {
-          setCurrentRun(run);
-        } else {
-          throw new Error("Could not setup run");
-        }
+      // 使用固定的sessionRunId，如果没有则生成一个
+      let runId = sessionRunId;
+      if (!runId) {
+        runId = generateSessionRunId();
+        setSessionRunId(runId);
       }
 
       // Load latest settings from database
@@ -724,7 +876,7 @@ export default function ChatView({
       }
 
       // Setup websocket connection
-      const socket = setupWebSocket(run.id, fresh_socket, false);
+      const socket = setupWebSocket(runId, fresh_socket, false);
       if (!socket) {
         throw new Error("WebSocket connection not available");
       }
@@ -788,44 +940,71 @@ export default function ChatView({
       throw new Error("Invalid session configuration");
     }
 
-    const socket = getSessionSocket(
-      session.id,
-      runId,
-      fresh_socket,
-      only_retrieve_existing_socket
-    );
-    if (!socket) {
-      return null;
+    if (activeSocketRef.current && !fresh_socket) {
+      return activeSocketRef.current;
     }
 
-    socket.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data);
-        handleWebSocketMessage(message);
-      } catch (error) {
-        console.error("WebSocket message parsing error:", error);
-      }
-    };
+    // 清除旧的定时器（如果有）
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+    }
+    
+    const ws = getSessionSocket(session.id, runId, fresh_socket, only_retrieve_existing_socket);
 
-    socket.onclose = () => {
+    if (ws) {
+      ws.onopen = () => {
+        console.log("WebSocket connection established for run_id:", runId);
+        setActiveSocket(ws);
+        activeSocketRef.current = ws;
+
+        // 设置心跳，每隔 30 秒发送一次 ping
+        heartbeatIntervalRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            console.log("Sending ping to server...");
+            ws.send(JSON.stringify({ type: "ping" }));
+          }
+        }, 30000); // 30000 毫秒 = 30 秒
+      };
+      
+      const messageHandler = (event: MessageEvent) => {
+        const raw_data = JSON.parse(event.data);
+        if (raw_data.type === 'pong') {
+          console.log("Received pong from server.");
+          return;
+        }
+        const data: WebSocketMessage = raw_data;
+        handleWebSocketMessage(data);
+      };
+      ws.onmessage = messageHandler;
+      
+      ws.onclose = () => {
+        console.log("WebSocket connection closed for run_id:", runId);
+        if (activeSocketRef.current === ws) {
       activeSocketRef.current = null;
       setActiveSocket(null);
+        }
+        // 连接关闭时，清除定时器
+        if (heartbeatIntervalRef.current) {
+          clearInterval(heartbeatIntervalRef.current);
+        }
     };
 
-    socket.onerror = (error) => {
-      handleError(error);
+      ws.onerror = (event) => {
+        handleError(event);
     };
 
-    setActiveSocket(socket);
+      setActiveSocket(ws);
     // set up socket ref
-    activeSocketRef.current = socket;
+      activeSocketRef.current = ws;
     console.log("Socket setup complete");
-    return socket;
+      return ws;
+    }
+    return null;
   };
 
   const lastMessage = currentRun?.messages.slice(-1)[0];
   const isPlanMessage =
-    lastMessage && messageUtils.isPlanMessage(lastMessage.config.metadata);
+    lastMessage && messageUtils.isPlanMessage(lastMessage?.config?.metadata);
 
   // Update the handler to be more specific about its purpose
   const handlePlanUpdate: PlanUpdateHandler = (plan: IPlanStep[]) => {
@@ -843,10 +1022,18 @@ export default function ChatView({
     }
   }, [localPlan, planProcessed, visible, session?.id, currentRun]);
 
-  // 清除临时消息当收到服务端响应时
+  // 清除临时消息当收到真正的用户消息时
   React.useEffect(() => {
     if (currentRun?.messages && currentRun.messages.length > 0) {
-      setPendingMessage(null);
+      // 检查是否有用户消息
+      const hasUserMessage = currentRun.messages.some((msg: Message) => {
+        const config = msg.config || convertBackendMessageToAgentConfig(msg);
+        return messageUtils.isUser(config.source) || messageUtils.isUserInputMessage(config.metadata);
+      });
+      
+      if (hasUserMessage) {
+        // setPendingMessage(null); // This line was removed from the new_code, so it's removed here.
+      }
     }
   }, [currentRun?.messages]);
 
@@ -863,7 +1050,7 @@ export default function ChatView({
       const socket =
         activeSocketRef.current?.readyState === WebSocket.OPEN
           ? activeSocketRef.current
-          : setupWebSocket(currentRun.id, true, false);
+          : setupWebSocket(sessionRunId || generateSessionRunId(), true, false);
 
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         console.error("WebSocket not available or not open");
@@ -921,7 +1108,7 @@ export default function ChatView({
 
     // Find the last plan message
     const lastPlanMessage = [...currentRun.messages].reverse().find((msg) => {
-      if (typeof msg.config.content !== "string") return false;
+      if (typeof msg?.config?.content !== "string") return false;
       return messageUtils.isPlanMessage(msg.config.metadata);
     });
 
@@ -952,7 +1139,7 @@ export default function ChatView({
     // Find the last final answer index
     const lastFinalAnswerIndex = currentRun.messages.findLastIndex(
       (msg: Message) =>
-        typeof msg.config.content === "string" &&
+        typeof msg?.config?.content === "string" &&
         messageUtils.isFinalAnswer(msg.config.metadata)
     );
 
@@ -963,7 +1150,7 @@ export default function ChatView({
         : currentRun.messages.slice(lastFinalAnswerIndex + 1);
 
     relevantMessages.forEach((msg: Message) => {
-      if (typeof msg.config.content === "string") {
+      if (typeof msg?.config?.content === "string") {
         try {
           const content = JSON.parse(msg.config.content);
           if (content.index !== undefined) {
@@ -1013,7 +1200,7 @@ export default function ChatView({
       const recentMessages = currentRun.messages.slice(-3);
       const hasPlan = recentMessages.some(
         (msg: Message) =>
-          typeof msg.config.content === "string" &&
+          typeof msg?.config?.content === "string" &&
           messageUtils.isPlanMessage(msg.config.metadata)
       );
 
@@ -1179,7 +1366,7 @@ export default function ChatView({
                     onCodeTest={handleCodeTest}
                     isCodeEditorMinimized={isCodeEditorMinimized}
                     setIsCodeEditorMinimized={setIsCodeEditorMinimized}
-                    pendingMessage={pendingMessage}
+                    messages={messages}
                   />
                 )}
               </>

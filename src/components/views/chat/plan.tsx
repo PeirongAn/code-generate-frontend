@@ -80,6 +80,12 @@ const PlanView: React.FC<PlanProps> = ({
   );
 
   useEffect(() => {
+    if (localPlan.length > 0) {
+      console.log('### get local plan ###', localPlan)
+    }
+  }, [localPlan])
+
+  useEffect(() => {
     if (forceCollapsed && !isCollapsed) {
       setIsCollapsed(true);
     }
@@ -196,76 +202,83 @@ const PlanView: React.FC<PlanProps> = ({
               <Droppable droppableId="plan">
                 {(provided) => (
                   <div {...provided.droppableProps} ref={provided.innerRef}>
-                    {localPlan.map((item, index) => (
-                      <Draggable
-                        key={`draggable-${index}`}
-                        draggableId={`draggable-${index}`}
-                        index={index}
-                        isDragDisabled={viewOnly}
-                      >
-                        {(provided) => (
-                          <div
-                            ref={provided.innerRef}
-                            {...provided.draggableProps}
-                            className="flex flex-row gap-2"
-                            onMouseEnter={() => setHoveredIndex(index)}
-                            onMouseLeave={() => setHoveredIndex(null)}
-                          >
-                            <div className="flex items-center">
-                              <span
-                                {...(!viewOnly ? provided.dragHandleProps : {})}
-                                className={`flex items-center justify-center  font-semibold p-1.5 ${
-                                  !viewOnly ? "cursor-grab" : ""
-                                }`}
-                              >
-                                Step {index + 1}
-                              </span>
-                            </div>
-                            <div className="border-transparent p-1  px-2 mt-2.5 flex-1 rounded">
+                    {localPlan.length === 0 ? (
+                      <div className="flex items-center justify-center p-8 text-[var(--color-text-secondary)] bg-[var(--color-bg-secondary)] rounded border-2 border-dashed border-[var(--color-border-primary)]">
+                        <ClipboardList className="h-6 w-6 mr-2" />
+                        <span>生成计划为空</span>
+                      </div>
+                    ) : (
+                      localPlan.map((item, index) => (
+                        <Draggable
+                          key={`draggable-${index}`}
+                          draggableId={`draggable-${index}`}
+                          index={index}
+                          isDragDisabled={viewOnly}
+                        >
+                          {(provided) => (
+                            <div
+                              ref={provided.innerRef}
+                              {...provided.draggableProps}
+                              className="flex flex-row gap-2"
+                              onMouseEnter={() => setHoveredIndex(index)}
+                              onMouseLeave={() => setHoveredIndex(null)}
+                            >
                               <div className="flex items-center">
-                                {
-                                  <AutoResizeTextarea
-                                    key={`textarea-${index}`}
-                                    value={item.details}
-                                    onChange={(
-                                      e: React.ChangeEvent<HTMLTextAreaElement>
-                                    ) => updateDetails(index, e.target.value)}
-                                    onBlur={() => setFocusedIndex(null)}
-                                    autoFocus
-                                    className={`flex-1 p-2 min-w-[100px] max-w-full resize-y bg-[var(--color-bg-secondary)] text-[var(--color-text-primary)] rounded ${
-                                      !item.details.trim()
-                                        ? "border border-orange-300"
-                                        : ""
-                                    } ${
-                                      viewOnly
-                                        ? "cursor-default focus:outline-none"
-                                        : ""
-                                    }`}
-                                    readOnly={viewOnly}
-                                    placeholder="Enter step details"
-                                  />
-                                }
-                                {!viewOnly && (
-                                  <div
-                                    className={`flex items-center transition-opacity ${
-                                      hoveredIndex === index
-                                        ? "opacity-100"
-                                        : "opacity-0"
-                                    }`}
-                                  >
-                                    <Trash2
-                                      role="button"
-                                      onClick={() => deleteLocalPlan(index)}
-                                      className="h-5 w-5 text-[var(--color-text-secondary)] ml-2 hover:text-red-500"
+                                <span
+                                  {...(!viewOnly ? provided.dragHandleProps : {})}
+                                  className={`flex items-center justify-center  font-semibold p-1.5 ${
+                                    !viewOnly ? "cursor-grab" : ""
+                                  }`}
+                                >
+                                  Step {index + 1}
+                                </span>
+                              </div>
+                              <div className="border-transparent p-1  px-2 mt-2.5 flex-1 rounded">
+                                <div className="flex items-center">
+                                  {
+                                    <AutoResizeTextarea
+                                      key={`textarea-${index}`}
+                                      value={item.details}
+                                      onChange={(
+                                        e: React.ChangeEvent<HTMLTextAreaElement>
+                                      ) => updateDetails(index, e.target.value)}
+                                      onBlur={() => setFocusedIndex(null)}
+                                      autoFocus
+                                      className={`flex-1 p-2 min-w-[100px] max-w-full resize-y bg-[var(--color-bg-secondary)] text-[var(--color-text-primary)] rounded ${
+                                        !item?.details?.trim()
+                                          ? "border border-orange-300"
+                                          : ""
+                                      } ${
+                                        viewOnly
+                                          ? "cursor-default focus:outline-none"
+                                          : ""
+                                      }`}
+                                      readOnly={viewOnly}
+                                      placeholder="Enter step details"
                                     />
-                                  </div>
-                                )}
+                                  }
+                                  {!viewOnly && (
+                                    <div
+                                      className={`flex items-center transition-opacity ${
+                                        hoveredIndex === index
+                                          ? "opacity-100"
+                                          : "opacity-0"
+                                      }`}
+                                    >
+                                      <Trash2
+                                        role="button"
+                                        onClick={() => deleteLocalPlan(index)}
+                                        className="h-5 w-5 text-[var(--color-text-secondary)] ml-2 hover:text-red-500"
+                                      />
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        )}
-                      </Draggable>
-                    ))}
+                          )}
+                        </Draggable>
+                      ))
+                    )}
                     {provided.placeholder}
                   </div>
                 )}

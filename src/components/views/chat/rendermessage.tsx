@@ -24,6 +24,7 @@ import PlanView from "./plan";
 import { IPlanStep, convertToIPlanSteps } from "../../types/plan";
 import RenderFile from "../../common/filerenderer";
 import LearnPlanButton from "../../features/Plans/LearnPlanButton";
+import ThinkingRenderer from "./ThinkingRenderer";
 
 // Types
 interface MessageProps {
@@ -101,6 +102,44 @@ const getImageSource = (item: ImageContent): string => {
   return "/api/placeholder/400/320";
 };
 
+const extractJson = (text: string): { json: string | null; remaining: string } => {
+    const startIndex = text.indexOf('{');
+    if (startIndex === -1) {
+        return { json: null, remaining: text };
+    }
+
+    let braceCount = 0;
+    let endIndex = -1;
+
+    for (let i = startIndex; i < text.length; i++) {
+        if (text[i] === '{') {
+        braceCount++;
+        } else if (text[i] === '}') {
+        braceCount--;
+        }
+
+        if (braceCount === 0 && text[i] === '}') {
+        endIndex = i;
+        break;
+        }
+    }
+
+    if (endIndex !== -1) {
+        const jsonString = text.substring(startIndex, endIndex + 1);
+        try {
+        JSON.parse(jsonString); // Validate if it's actual JSON
+        const remainingText = text.substring(endIndex + 1);
+        return { json: jsonString, remaining: remainingText };
+        } catch (e) {
+        // It looked like JSON, but wasn't.
+        return { json: null, remaining: text };
+        }
+    }
+
+    // No matching brace found
+    return { json: null, remaining: text };
+}
+
 const getStepIcon = (
   status: string,
   runStatus: string,
@@ -160,7 +199,7 @@ const parseUserContent = (content: AgentMessageConfig): ParsedContent => {
 
     // Return both the content and plan if they exist
     return {
-      text: parsedContent.content || content,
+      text: parsedContent.content || message_content,
       plan: planSteps.length > 0 ? planSteps : undefined,
       metadata: content.metadata,
     };
@@ -199,6 +238,15 @@ const parseorchestratorContent = (
     }
     if (messageUtils.isStepExecution(metadata)) {
       return { type: "step-execution" as const, content: parsedContent };
+    }
+    if (
+      (parsedContent.steps && Array.isArray(parsedContent.steps)) ||
+      parsedContent.dialog
+    ) {
+      if (parsedContent.dialog) {
+        return { type: "default" as const, content: parsedContent.dialog };
+      }
+      return { type: "plan" as const, content: parsedContent };
     }
   } catch {}
 
@@ -241,7 +289,7 @@ const RenderMultiModalBrowserStep: React.FC<{
               className="flex-1 cursor-pointer mt-2"
               onClick={() => onImageClick?.(index)}
             >
-              <MarkdownRenderer content={item} indented={true} />
+              <MarkdownRenderer content={item} />
             </div>
           </div>
         </div>
@@ -257,7 +305,7 @@ const RenderMultiModal: React.FC<{
     {content.map((item, index) => (
       <div key={index}>
         {typeof item === "string" ? (
-          <MarkdownRenderer content={item} indented={true} />
+          <MarkdownRenderer content={item} />
         ) : (
           <ClickableImage
             src={getImageSource(item)}
@@ -278,7 +326,6 @@ const RenderToolCall: React.FC<{ content: FunctionCall[] }> = memo(
           <div className="font-medium">Function: {call.name}</div>
           <MarkdownRenderer
             content={JSON.stringify(JSON.parse(call.arguments), null, 2)}
-            indented={true}
           />
         </div>
       ))}
@@ -292,7 +339,7 @@ const RenderToolResult: React.FC<{ content: FunctionExecutionResult[] }> = memo(
       {content.map((result) => (
         <div key={result.call_id} className="rounded p-2">
           <div className="font-medium">Result ID: {result.call_id}</div>
-          <MarkdownRenderer content={result.content} indented={true} />
+          <MarkdownRenderer content={result.content} />
         </div>
       ))}
     </div>
@@ -449,6 +496,10 @@ interface RenderFinalAnswerProps {
   sessionId: number;
   messageIdx: number;
 }
+interface RenderAgentErrorProps {
+  content: string;
+  metadata?: Record<string, any>;
+}
 
 const RenderFinalAnswer: React.FC<RenderFinalAnswerProps> = memo(
   ({ content, sessionId, messageIdx }) => {
@@ -472,205 +523,328 @@ const RenderFinalAnswer: React.FC<RenderFinalAnswerProps> = memo(
   }
 );
 
+const RenderAgentError: React.FC<RenderAgentErrorProps> = memo(
+  ({ content, metadata }) => {
+    const agentType = metadata?.agent_type || "unknown";
+    const error = metadata?.error;
+    const success = metadata?.success;
+
+    return (
+      <div className="agent-error-container rounded-lg border border-red-200 bg-gradient-to-r from-red-50 to-rose-50 p-4 shadow-sm">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5">
+            <AlertTriangle className="h-5 w-5 text-red-600" />
+          </div>
+          <div className="flex-1">
+            <div className="mb-2 flex items-center gap-2">
+              <span className="text-sm font-semibold text-red-800">
+                代理错误
+              </span>
+              {agentType !== "unknown" && (
+                <span className="text-xs text-red-600 bg-red-100 px-2 py-1 rounded">
+                  {agentType}
+                </span>
+              )}
+            </div>
+            <div className="text-sm text-gray-700">
+              <MarkdownRenderer content={content} indented={false} />
+            </div>
+            {error && (
+              <div className="mt-2 text-xs text-red-600 bg-red-100 p-2 rounded">
+                错误详情: {error}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+);
+
+RenderAgentError.displayName = "RenderAgentError";
+
 RenderFinalAnswer.displayName = "RenderFinalAnswer";
 
 // Message type checking utilities
 export const messageUtils = {
   isToolCallContent(content: unknown): content is FunctionCall[] {
-    if (!Array.isArray(content)) return false;
-    return content.every(
-      (item) =>
-        typeof item === "object" &&
-        item !== null &&
-        "id" in item &&
-        "arguments" in item &&
-        "name" in item
+    return (
+      Array.isArray(content) &&
+      content.every((item) => typeof item === "object" && "function" in item)
     );
   },
 
   isMultiModalContent(content: unknown): content is (string | ImageContent)[] {
-    if (!Array.isArray(content)) return false;
-    return content.every(
-      (item) =>
-        typeof item === "string" ||
-        (typeof item === "object" &&
-          item !== null &&
-          ("url" in item || "data" in item))
+    if (!Array.isArray(content)) {
+      return false;
+    }
+    // Check if it's not a FunctionExecutionResult array
+    if (content.every((item) => typeof item === "object" && item !== null && "call_id" in item)) {
+      return false;
+    }
+    return (
+      content.every(
+        (item) =>
+          typeof item === "string" ||
+          (typeof item === "object" && item !== null && "url" in item)
+      )
     );
   },
-
   isFunctionExecutionResult(
     content: unknown
   ): content is FunctionExecutionResult[] {
-    if (!Array.isArray(content)) return false;
-    return content.every(
-      (item) =>
-        typeof item === "object" &&
-        item !== null &&
-        "call_id" in item &&
-        "content" in item
+    return (
+      Array.isArray(content) &&
+      content.every(
+        (item) => typeof item === "object" && "function_name" in item
+      )
     );
   },
-
   isFinalAnswer(metadata?: Record<string, any>): boolean {
     return metadata?.type === "final_answer";
   },
 
   isPlanMessage(metadata?: Record<string, any>): boolean {
-    return metadata?.type === "plan_message";
+    return metadata?.type === "plan" || metadata?.content_type === "plan";
   },
 
   isStepExecution(metadata?: Record<string, any>): boolean {
     return metadata?.type === "step_execution";
   },
 
+  isThinkingMessage(metadata?: Record<string, any>): boolean {
+    return metadata?.type === "thinking";
+  },
+
+  isResponseMessage(metadata?: Record<string, any>): boolean {
+    return metadata?.type === "response";
+  },
+
+  isUserInputMessage(metadata?: Record<string, any>): boolean {
+    return metadata?.type === "user_input";
+  },
+
+  isAgentErrorMessage(metadata?: Record<string, any>): boolean {
+    return (
+      typeof metadata?.type === "string" && metadata.type.startsWith("agent_error")
+    );
+  },
+
+  extractJsonFromMarkdown(content: string): string | null {
+    // New regex without 's' flag, using [\s\S] instead of .
+    const regex = /```json\n([\s\S]*?)\n```/;
+    const match = content.match(regex);
+    if (match && match[1]) {
+      return match[1];
+    } else {
+      return null;
+    }
+  },
+
+  isPlanContent(content: unknown): content is string {
+    if (typeof content !== 'string') {
+      return false;
+    }
+    try {
+        if (!content.trim().startsWith('{')) {
+          return false;
+        }
+      const parsed = JSON.parse(content);
+        return typeof parsed === "object" && parsed !== null && ("task" in parsed || "steps" in parsed || "plan_summary" in parsed);
+      } catch (e) {
+      return false;
+    }
+  },
+
+  extractPlanAndRemainingText(content: string): { plan: object | null; remaining: string } {
+    const { json, remaining } = extractJson(content);
+
+    if (json) {
+      try {
+        const parsed = JSON.parse(json);
+        if (typeof parsed === "object" && parsed !== null && ("task" in parsed || "steps" in parsed || "plan_summary" in parsed)) {
+          return { plan: parsed, remaining: remaining.trim() };
+        }
+      } catch (e) {
+        // Fall through
+      }
+    }
+
+    return { plan: null, remaining: content };
+  },
+
+  isStepsResponse(content: unknown): boolean {
+    if (typeof content !== "string") return false;
+    let jsonString = this.extractJsonFromMarkdown(content);
+    if (!jsonString) {
+      if (content.trim().startsWith('{')) {
+        jsonString = content;
+      } else {
+        return false;
+      }
+    }
+    try {
+      const parsed = JSON.parse(jsonString);
+      return typeof parsed === "object" && parsed !== null && ("steps" in parsed || "dialog" in parsed);
+    } catch {
+      return false;
+    }
+  },
+
+  parseStepsFromResponse(content: string): { steps: IPlanStep[]; summary?: string; dialog?: string } {
+    let jsonString = this.extractJsonFromMarkdown(content);
+    if (!jsonString) {
+      if (content.trim().startsWith('{')) {
+        jsonString = content;
+      } else {
+        return { steps: [] };
+      }
+    }
+    try {
+      const parsed = JSON.parse(jsonString);
+      const rawSteps = parsed.steps || [];
+
+      if (rawSteps.length === 0) {
+        return { steps: [], summary: parsed.plan_summary, dialog: parsed.dialog };
+      }
+
+      const firstStep = rawSteps[0];
+      let normalizedSteps: IPlanStep[] = [];
+
+      // Case 1: Array of strings like ["step1: ..."]
+      if (typeof firstStep === 'string') {
+        normalizedSteps = rawSteps.map((stepString: string) => {
+          const parts = stepString.split(/:(.*)/); // Split only on the first colon, removed 's' flag
+          return {
+            title: parts[0]?.trim() || "Step",
+            details: parts[1]?.trim() || stepString,
+            enabled: true,
+            agent_name: "",
+          };
+        });
+      }
+      // Case 2: Array of objects like [{"step1": "..."}]
+      else if (typeof firstStep === 'object' && firstStep !== null && !('details' in firstStep)) {
+        rawSteps.forEach((step: any) => {
+          if (typeof step === 'object' && step !== null) {
+            for (const key in step) {
+              if (Object.prototype.hasOwnProperty.call(step, key)) {
+                normalizedSteps.push({
+                  title: key,
+                  details: String(step[key]),
+                  enabled: true,
+                  agent_name: "",
+                });
+                break; // Process only the first key-value pair
+              }
+            }
+          }
+        });
+      }
+      // Case 3: Already in the correct format
+      else {
+        normalizedSteps = rawSteps;
+      }
+
+      return {
+        steps: normalizedSteps,
+        summary: parsed.plan_summary,
+        dialog: parsed.dialog,
+      };
+    } catch (e) {
+      console.error("Failed to parse steps from response:", e);
+      return { steps: [] };
+    }
+  },
+
   isCodeMessage(message: AgentMessageConfig): boolean {
-    // Check if metadata type is "code"
-    if (message.metadata?.type === "code") {
-      return true;
+    if (message.content) {
+      const contentStr = Array.isArray(message.content)
+        ? message.content.join("\n")
+        : String(message.content);
+      const codeBlockRegex = /```.*\n[\s\S]*?\n```/;
+      return codeBlockRegex.test(contentStr);
     }
-    
-    // Check if content contains code patterns
-    if (typeof message.content === "string") {
-      return (
-        message.content.includes("```python") ||
-        message.content.includes("def ") ||
-        message.content.includes("import ")
-      );
-    }
-    
     return false;
   },
 
   isBrowserMessage(message: AgentMessageConfig): boolean {
-    const content = String(message.content);
-    
-    // Check if message has browser metadata
-    if (message.metadata?.type === "browser_address" || message.metadata?.type === "browser_screenshot") {
-      return true;
-    }
-    
-    // Check if content contains browser-related keywords
-    if (content.includes("browser") || content.includes("navigate") || content.includes("click") || content.includes("screenshot")) {
-      return true;
-    }
-    
-    // Check for URLs
-    if (content.includes("http://") || content.includes("https://") || content.includes("localhost:")) {
-      return true;
-    }
-    
-    return false;
+    return (
+      message.metadata?.agent_name === "Web Surfer" ||
+      (message.metadata?.content_type === "browser_actions" &&
+        Array.isArray(message.content))
+    );
   },
-
   findUserPlan(content: unknown): IPlanStep[] {
-    if (typeof content !== "string") return [];
+    if (typeof content !== "string") {
+      return [];
+    }
     try {
       const parsedContent = JSON.parse(content);
-      let plan = [];
-      if (parsedContent.plan && typeof parsedContent.plan === "string") {
-        plan = JSON.parse(parsedContent.plan);
+      if (parsedContent.plan) {
+        return convertToIPlanSteps(parsedContent.plan);
       }
-      return plan;
-    } catch {
+      return [];
+    } catch (e) {
       return [];
     }
   },
 
   updatePlan(content: unknown, planSteps: IPlanStep[]): string {
-    if (typeof content !== "string") return "";
-
+    if (typeof content !== "string") {
+      return String(content);
+    }
     try {
       const parsedContent = JSON.parse(content);
-
-      if (typeof parsedContent === "object" && parsedContent !== null) {
-        parsedContent.steps = planSteps;
-        return JSON.stringify(parsedContent);
+      if (parsedContent.plan) {
+        parsedContent.plan = planSteps;
+        return JSON.stringify(parsedContent, null, 2);
       }
-
-      return "";
-    } catch (error) {
-      console.error("Failed to update plan:", error);
-      return "";
+      return content;
+    } catch (e) {
+      return content;
     }
   },
 
   isUser(source: string): boolean {
-    return source === "user" || source === "user_proxy";
+    return source === "user";
   },
 };
 
-const RenderUserMessage: React.FC<{
-  parsedContent: ParsedContent;
-  isUserProxy: boolean;
-}> = memo(({ parsedContent, isUserProxy }) => {
-  // Parse attached files from metadata if present
-  const attachedFiles: AttachedFile[] = React.useMemo(() => {
-    if (parsedContent.metadata?.attached_files) {
-      try {
-        return JSON.parse(parsedContent.metadata.attached_files);
-      } catch (e) {
-        console.error("Failed to parse attached_files:", e);
-        return [];
-      }
-    }
-    return [];
-  }, [parsedContent.metadata?.attached_files]);
+const RenderUserMessage: React.FC<MessageProps> = memo((props) => {
+  const parsedContent = parseUserContent(props.message);
+  const textContent = parsedContent.text;
+
+  const contentHasPlan = 'plan' in parsedContent && parsedContent.plan;
 
   return (
-    <div className="space-y-2">
-      {/* Show attached file icons if present */}
-      {attachedFiles.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {attachedFiles.map((file, index) => (
-            <div
-              key={index}
-              className="flex items-center gap-1  rounded px-2 py-1 text-xs"
-              title={file.name}
-            >
-              {file.type.startsWith("image") ? (
-                <ImageIcon className="w-3 h-3" />
-              ) : (
-                <FileTextIcon className="w-3 h-3" />
-              )}
-              <span className="truncate max-w-[150px]">{file.name}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Existing content rendering */}
-      {messageUtils.isMultiModalContent(parsedContent.text) ? (
-        <div className="space-y-2">
-          {parsedContent.text.map((item, index) => (
-            <div key={index}>
-              {typeof item === "string" ? (
-                <div className="break-words whitespace-pre-wrap overflow-wrap-anywhere">
-                  {parseContent(item)}
-                </div>
-              ) : (
-                <></>
-              )}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="break-words whitespace-pre-wrap overflow-wrap-anywhere">
-          {String(parsedContent.text)}
-        </div>
-      )}
-
-      {parsedContent.plan &&
-        Array.isArray(parsedContent.plan) &&
-        parsedContent.plan.length > 0 && (
-          <PlanView
-            task={""}
-            plan={parsedContent.plan}
-            setPlan={() => {}} // No-op since it's read-only
-            viewOnly={true}
-            onSavePlan={() => {}} // No-op since it's read-only
+    <div className="flex items-start gap-3 justify-end">
+      <div className="w-full max-w-full lg:max-w-4xl text-sm bg-white rounded-lg p-4 shadow-sm order-1">
+        {contentHasPlan ? (
+          <RenderPlan
+            content={{ steps: parsedContent.plan }}
+            isEditable={false}
+            forceCollapsed={false}
+            {...props}
+          />
+        ) : null}
+        {messageUtils.isMultiModalContent(textContent) ? (
+          <RenderMultiModal content={textContent} />
+        ) : messageUtils.isFunctionExecutionResult(textContent) ? (
+          <RenderToolResult content={textContent} />
+        ) : (
+          <MarkdownRenderer
+            content={
+              messageUtils.isToolCallContent(textContent)
+                ? `\`\`\`json\n${JSON.stringify(textContent, null, 2)}\n\`\`\``
+                : String(textContent)
+            }
           />
         )}
+      </div>
+      <div className="relative w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white font-bold order-2">
+        U
+        </div>
     </div>
   );
 });
@@ -721,7 +895,6 @@ const RenderCodePreview: React.FC<{
         <div className="break-words">
           <MarkdownRenderer 
             content={content.replace(/```(?:python)?\n?[\s\S]*?```/, '[代码块]')} 
-            indented={true} 
           />
         </div>
       )}
@@ -772,27 +945,39 @@ export const RenderMessage: React.FC<MessageProps> = memo(
     message,
     sessionId,
     messageIdx,
-    runStatus,
-    isLast = false,
-    className = "",
-    isEditable = false,
-    hidden = false,
-    is_step_repeated = false,
-    is_step_failed = false,
+    isLast,
+    className,
+    isEditable,
+    hidden,
+    is_step_repeated,
+    is_step_failed,
     onSavePlan,
     onImageClick,
     onToggleHide,
     onRegeneratePlan,
-    forceCollapsed = false,
+    runStatus,
+    forceCollapsed,
     onOpenCodeEditor,
     novncPort,
-    showDetailViewer = false,
+    showDetailViewer,
     onToggleDetailViewer,
-    showCodeEditor = false,
-    isCodeEditorMinimized = false,
+    showCodeEditor,
+    isCodeEditorMinimized,
     onToggleCodeEditor,
     onMinimizeCodeEditor,
   }) => {
+    if (hidden) {
+      return (
+        <div
+          className="flex items-center text-gray-500 cursor-pointer"
+          onClick={() => onToggleHide?.(true)}
+        >
+          <ChevronRight size={16} />
+          <span>Show hidden messages</span>
+        </div>
+      );
+    }
+
     if (!message) return null;
     if (message.metadata?.type === "browser_address") return null;
 
@@ -840,7 +1025,7 @@ export const RenderMessage: React.FC<MessageProps> = memo(
             className={`${
               isUser || isUserProxy
                 ? `text-primary rounded-2xl bg-tertiary rounded-tr-sm px-4 py-2 ${
-                    parsedContent.plan && parsedContent.plan.length > 0
+                    'plan' in parsedContent && parsedContent.plan && parsedContent.plan.length > 0
                       ? "w-[80%]"
                       : "max-w-[80%]"
                   }`
@@ -850,17 +1035,82 @@ export const RenderMessage: React.FC<MessageProps> = memo(
             {/* Show user message content first */}
             {(isUser || isUserProxy) && (
               <RenderUserMessage
-                parsedContent={parsedContent}
-                isUserProxy={isUserProxy}
+                message={message}
+                sessionId={sessionId}
+                messageIdx={messageIdx}
+                isLast={isLast}
+                className={className}
+                isEditable={isEditable}
+                hidden={hidden}
+                is_step_repeated={is_step_repeated}
+                is_step_failed={is_step_failed}
+                onSavePlan={onSavePlan}
+                onImageClick={onImageClick}
+                onToggleHide={onToggleHide}
+                onRegeneratePlan={onRegeneratePlan}
+                runStatus={runStatus}
+                forceCollapsed={forceCollapsed}
+                onOpenCodeEditor={onOpenCodeEditor}
+                novncPort={novncPort}
+                showDetailViewer={showDetailViewer}
+                onToggleDetailViewer={onToggleDetailViewer}
+                showCodeEditor={showCodeEditor}
+                isCodeEditorMinimized={isCodeEditorMinimized}
+                onToggleCodeEditor={onToggleCodeEditor}
+                onMinimizeCodeEditor={onMinimizeCodeEditor}
               />
             )}
             {/* Handle other content types */}
             {!isUser &&
               !isUserProxy &&
-              (isPlanMsg ? (
+              (messageUtils.isAgentErrorMessage(message.metadata) ? (
+                <RenderAgentError
+                  content={String(parsedContent.text)}
+                  metadata={message.metadata}
+                />
+              ) : messageUtils.isThinkingMessage(message.metadata) ? (
+                <ThinkingRenderer
+                  content={String(parsedContent.text)}
+                  isComplete={message.metadata?.is_complete || false}
+                  timestamp={message.metadata?.timestamp}
+                />
+              ) : messageUtils.isResponseMessage(message.metadata) && messageUtils.isStepsResponse(parsedContent.text) ? (
+                (() => {
+                  const { steps, summary, dialog } = messageUtils.parseStepsFromResponse(String(parsedContent.text));
+                  return (
+                    <div className="response-steps">
+                      {summary && (
+                        <div className="mb-4 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                          <h4 className="font-semibold text-blue-800 dark:text-blue-200 mb-2">
+                            计划摘要
+                          </h4>
+                          <p className="text-sm text-blue-700 dark:text-blue-300">
+                            {summary}
+                          </p>
+                        </div>
+                      )}
+                      {dialog && (
+                        <div className="mb-2">
+                          <MarkdownRenderer content={dialog} />
+                        </div>
+                      )}
+                      {steps && steps.length > 0 && (
+                        <PlanView
+                          task="执行计划"
+                          plan={steps}
+                          setPlan={() => {}} // 只读模式
+                          viewOnly={true}
+                          isCollapsed={false}
+                          forceCollapsed={false}
+                        />
+                      )}
+                    </div>
+                  );
+                })()
+              ) : orchestratorContent?.type === "plan" ? (
                 <RenderPlan
-                  content={orchestratorContent?.content || {}}
-                  isEditable={isEditable}
+                  content={orchestratorContent.content}
+                  isEditable={isEditable || false}
                   onSavePlan={onSavePlan}
                   onRegeneratePlan={onRegeneratePlan}
                   forceCollapsed={forceCollapsed}
@@ -881,18 +1131,18 @@ export const RenderMessage: React.FC<MessageProps> = memo(
                   messageIdx={messageIdx}
                 />
               ) : messageUtils.isToolCallContent(parsedContent.text) ? (
-                <RenderToolCall content={parsedContent.text} />
+                <RenderToolCall content={parsedContent.text as FunctionCall[]} />
               ) : messageUtils.isMultiModalContent(parsedContent.text) ? (
                 message.metadata?.type === "browser_screenshot" ? (
                   <RenderMultiModalBrowserStep
-                    content={parsedContent.text}
+                    content={parsedContent.text as (string | ImageContent)[]}
                     onImageClick={onImageClick}
                   />
                 ) : (
-                  <RenderMultiModal content={parsedContent.text} />
+                  <RenderMultiModal content={parsedContent.text as (string | ImageContent)[]} />
                 )
               ) : messageUtils.isFunctionExecutionResult(parsedContent.text) ? (
-                <RenderToolResult content={parsedContent.text} />
+                <RenderToolResult content={parsedContent.text as FunctionExecutionResult[]} />
               ) : (
                 <div className="break-words">
                   {message.metadata?.type === "file" ? (

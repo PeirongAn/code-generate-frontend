@@ -24,7 +24,7 @@ export interface FunctionExecutionResult {
 export interface BaseMessageConfig {
   source: string;
   models_usage?: RequestUsage;
-  metadata?: Record<string, string>;
+  metadata?: Record<string, any>;
   version?: number;
 }
 
@@ -86,6 +86,17 @@ export interface Message extends DBModel {
   config: AgentMessageConfig;
   session_id: number;
   run_id: string;
+  // Merged from WebSocketMessage
+  type?:
+    | "message"
+    | "result"
+    | "completion"
+    | "input_request"
+    | "error"
+    | "system";
+  data?: any; // Using 'any' for now for flexibility, can be refined
+  status?: RunStatus;
+  error?: string;
 }
 
 export interface Session extends DBModel {

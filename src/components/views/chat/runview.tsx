@@ -10,6 +10,7 @@ import ApprovalButtons from "./approval_buttons";
 import ChatInput from "./chatinput";
 import { IStatus } from "../../types/app";
 import { RcFile } from "antd/es/upload";
+import ConfirmationRenderer from "./ConfirmationRenderer";
 
 const DETAIL_VIEWER_CONTAINER_ID = "detail-viewer-container";
 
@@ -51,8 +52,8 @@ interface RunViewProps {
   onOpenCodeInEditor?: (code: string) => void;
   isCodeEditorMinimized?: boolean;
   setIsCodeEditorMinimized?: (minimized: boolean) => void;
-  // 临时消息相关
-  pendingMessage?: string | null;
+  // 消息列表
+  messages: Message[];
 }
 
 const RunView: React.FC<RunViewProps> = ({
@@ -86,14 +87,17 @@ const RunView: React.FC<RunViewProps> = ({
   onOpenCodeInEditor,
   isCodeEditorMinimized = false,
   setIsCodeEditorMinimized,
-  pendingMessage,
+  messages,
 }) => {
-  console.log('##### RunView rendering with props #####', {
-    hasCode,
-    showCodeEditor,
-    currentCode: currentCode.substring(0, 50) + (currentCode.length > 50 ? '...' : ''),
-    runId: run.id
-  });
+  const isConfirmationMessage = (message: Message): boolean => {
+    // Type guard for status
+    const status: string = message.status || "";
+    return (
+      message.type === "result" &&
+      status === "failed" &&
+      message.data?.message?.includes("确认规划")
+    );
+  };
   const threadContainerRef = useRef<HTMLDivElement | null>(null);
   const [localNovncPort, setLocalNovncPort] = useState<string | undefined>();
   
@@ -110,7 +114,8 @@ const RunView: React.FC<RunViewProps> = ({
   const [hiddenStepExecutionIndices, setHiddenStepExecutionIndices] = useState<
     Set<number>
   >(new Set());
-  const [localMessages, setLocalMessages] = useState<Message[]>([]);
+  const [thinkingMessages, setThinkingMessages] = useState<Map<string, string>>(new Map());
+  const [activeMessageTypes, setActiveMessageTypes] = useState<Map<string, string>>(new Map());
 
   const isTogglingRef = useRef(false);
 
@@ -133,7 +138,7 @@ const RunView: React.FC<RunViewProps> = ({
 
   // Combine scroll behavior when messages or status change
   useEffect(() => {
-    if (run.messages.length > 0 && threadContainerRef.current) {
+    if (messages.length > 0 && threadContainerRef.current) {
       // Use a small delay to ensure the DOM has updated
       setTimeout(() => {
         const container = threadContainerRef.current;
@@ -142,12 +147,12 @@ const RunView: React.FC<RunViewProps> = ({
         }
       }, 100);
     }
-  }, [run.messages, run.status]);
+  }, [messages, run.status]);
 
   // Effect to handle browser_address message
   useEffect(() => {
-    const browserAddressMessages = run.messages.filter(
-      (msg: Message) => msg.config.metadata?.type === "browser_address"
+    const browserAddressMessages = messages.filter(
+      (msg: Message) => msg?.config?.metadata?.type === "browser_address"
     );
     const lastBrowserAddressMsg =
       browserAddressMessages[browserAddressMessages.length - 1];
@@ -160,12 +165,12 @@ const RunView: React.FC<RunViewProps> = ({
       setLocalNovncPort(lastBrowserAddressMsg.config.metadata?.novnc_port);
       // Removed auto-show logic - now controlled manually
     }
-  }, [run.messages]);
+  }, [messages]);
 
   const isEditable =
     run.status === "awaiting_input" &&
-    messageUtils.isPlanMessage(
-      run.messages[run.messages.length - 1]?.config.metadata
+    messageUtils.isPlanContent(
+      messages[messages.length - 1]?.config.content
     );
 
   // Add state for tracking images from multimodal messages
@@ -197,8 +202,8 @@ const RunView: React.FC<RunViewProps> = ({
 
     messages.forEach((msg: Message, msgIndex: number) => {
       if (
-        Array.isArray(msg.config.content) &&
-        msg.config.metadata?.type === "browser_screenshot"
+        Array.isArray(msg?.config?.content) &&
+        msg?.config?.metadata?.type === "browser_screenshot"
       ) {
         msg.config.content.forEach((item: any, itemIndex: number) => {
           if (typeof item === "object" && ("url" in item || "data" in item)) {
@@ -226,8 +231,8 @@ const RunView: React.FC<RunViewProps> = ({
 
   // Update images when messages change
   useEffect(() => {
-    collectImagesFromMessages(run.messages);
-  }, [run.messages]);
+    collectImagesFromMessages(messages);
+  }, [messages]);
 
   const handleMaximize = () => {
     setIsDetailViewerMinimized(false);
@@ -252,588 +257,194 @@ const RunView: React.FC<RunViewProps> = ({
     }
   };
 
-  const handleToggleHide = async (messageIndex: number, expanded: boolean) => {
-    // If a toggle operation is already in progress, ignore this request
-    if (isTogglingRef.current) {
-      console.log(
-        "Something bad: Toggle operation already in progress, ignoring request"
-      );
-      return;
-    }
-
-    try {
-      isTogglingRef.current = true;
-      const newIndicesToHide = new Set();
-
-      // Find the next significant message index
-      let nextSignificantIndex = run.messages.length; // Default to end of messages
-      for (let i = messageIndex + 1; i < run.messages.length; i++) {
-        const msg = run.messages[i];
-        const content = msg.config.content;
-
-        // Check if this is a significant message that should stop the hiding
-        if (
-          typeof content === "string" &&
-          (messageUtils.isFinalAnswer(msg.config.metadata) ||
-            messageUtils.isPlanMessage(msg.config.metadata))
-        ) {
-          nextSignificantIndex = i;
-          break;
-        }
-
-        // Check for messages with title and details that aren't duplicates
-        if (
-          messageUtils.isStepExecution(msg.config.metadata) &&
-          typeof content === "string"
-        ) {
-          try {
-            const currentStep = JSON.parse(content);
-            if (currentStep.title && currentStep.details) {
-              // Check if this step is a duplicate of any previous step
-              const earlierMessages = run.messages.slice(0, i);
-              const isDuplicate = earlierMessages.some(
-                (earlierMsg: Message) => {
-                  if (typeof earlierMsg.config.content !== "string")
-                    return false;
-                  try {
-                    const earlierContent = JSON.parse(
-                      earlierMsg.config.content
-                    );
-                    return (
-                      earlierContent.title === currentStep.title &&
-                      earlierContent.details === currentStep.details
-                    );
-                  } catch {
-                    return false;
-                  }
-                }
-              );
-
-              if (!isDuplicate) {
-                nextSignificantIndex = i;
-                break;
-              }
-            }
-          } catch {
-            // If we can't parse the JSON, continue to next message
-            continue;
-          }
-        }
-      }
-
-      // Update hidden states for messages between current and next significant message
-      for (let i = messageIndex + 1; i < nextSignificantIndex; i++) {
-        newIndicesToHide.add(i);
-      }
-      if (!expanded) {
-        setHiddenMessageIndices((prevSet) => {
-          const updatedSet = new Set(prevSet);
-          newIndicesToHide.forEach((index: any) => updatedSet.add(index));
-          return updatedSet;
-        });
+  const toggleMessageVisibility = (index: number) => {
+    setHiddenMessageIndices((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(index)) {
+        newSet.delete(index);
       } else {
-        setHiddenMessageIndices((prevSet) => {
-          const updatedSet = new Set(prevSet);
-          newIndicesToHide.forEach((index: any) => updatedSet.delete(index));
-          return updatedSet;
-        });
+        newSet.add(index);
       }
-    } finally {
-      // Always reset the toggling flag when done
-      isTogglingRef.current = false;
+      return newSet;
+    });
+  };
+
+  const toggleStepExecutionVisibility = (index: number) => {
+    setHiddenStepExecutionIndices((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(index)) {
+        newSet.delete(index);
+      } else {
+        newSet.add(index);
+      }
+      return newSet;
+    });
+  };
+
+  const isStepExecution = (message: Message): boolean => {
+    return (
+      message.config.metadata?.type === "step_execution" ||
+      message.config.metadata?.type === "substep_execution"
+    );
+  };
+
+  const handleSavePlan = () => {
+    const lastMessage = messages[messages.length - 1];
+    if (
+      lastMessage &&
+      typeof lastMessage.config.content === "string" &&
+      messageUtils.isPlanMessage(lastMessage.config.metadata)
+    ) {
+      const plan = JSON.parse(lastMessage.config.content);
+      if (onSavePlan) {
+        onSavePlan(plan);
+      }
     }
   };
 
-  // Add this function to check if a message is a step execution
-  const isStepExecution = (message: Message): boolean => {
-    return messageUtils.isStepExecution(message.config.metadata);
+  const handleApprove = () => {
+    if (onApprove) {
+      onApprove();
+    }
   };
 
-  // Add this effect to update repeated steps whenever messages change
-  useEffect(() => {
-    const newRepeatedIndices = new Set<number>();
-    const newFailedIndices = new Set<number>();
-    const newRepeatedHistory = new Map<number, number[]>();
+  const handleDeny = () => {
+    if (onDeny) {
+      onDeny();
+    }
+  };
 
-    // For each message that is a step execution
-    run.messages.forEach((msg: Message, msgIndex: number) => {
-      if (!isStepExecution(msg)) return;
+  const handleAcceptPlan = (text: string) => {
+    if (onAcceptPlan) {
+      onAcceptPlan(text);
+    }
+  };
 
-      try {
-        const content = JSON.parse(String(msg.config.content));
-
-        // Look for earlier messages with same step details
-        const earlierMessages = run.messages.slice(0, msgIndex);
-        const identicalStepIndices: number[] = [];
-
-        // Find all identical steps
-        earlierMessages.forEach((earlierMsg: Message, idx: number) => {
-          if (typeof earlierMsg.config.content !== "string") return;
-          try {
-            const earlierContent = JSON.parse(earlierMsg.config.content);
-            if (
-              earlierContent.index === content.index &&
-              earlierContent.title === content.title &&
-              earlierContent.details === content.details
-            ) {
-              identicalStepIndices.push(idx);
-            }
-          } catch {
-            return;
-          }
-        });
-
-        // If we found identical steps, check for Final Answer or Plan after the last one
-        if (identicalStepIndices.length > 0) {
-          const messagesBetween = run.messages.slice(
-            identicalStepIndices[identicalStepIndices.length - 1] + 1,
-            msgIndex
-          );
-
-          const hasSeparator = messagesBetween.some((msg: Message) => {
-            if (typeof msg.config.content !== "string") return false;
-            return (
-              messageUtils.isPlanMessage(msg.config.metadata) ||
-              messageUtils.isFinalAnswer(msg.config.metadata)
-            );
-          });
-
-          // Only mark as repeated if there's no separator
-          if (!hasSeparator) {
-            newRepeatedIndices.add(msgIndex);
-            newRepeatedHistory.set(msgIndex, identicalStepIndices);
-          }
-        }
-
-        // Separate step failure detection
-        const nextMessages = run.messages.slice(msgIndex + 1);
-        for (const nextMsg of nextMessages) {
-          if (typeof nextMsg.config.content !== "string") continue;
-
-          // If we find a step execution, plan, or final answer before finding "Replanning...", break
-          try {
-            if (messageUtils.isStepExecution(nextMsg.config.metadata)) break;
-            if (messageUtils.isPlanMessage(nextMsg.config.metadata)) break;
-            if (nextMsg.config.metadata?.type === "replanning") {
-              newFailedIndices.add(msgIndex);
-              break;
-            }
-          } catch {
-            if (messageUtils.isFinalAnswer(nextMsg.config.metadata)) break;
-          }
-        }
-      } catch {
-        // Skip if we can't parse the message
-      }
-    });
-    setRepeatedStepIndices(newRepeatedIndices);
-    setFailedStepIndices(newFailedIndices);
-
-    // handle auto-hiding of previous step execution messages
-    const newHiddenStepExecutionIndices = new Set(hiddenStepExecutionIndices);
-    // Process messages in order
-    (async () => {
-      for (let i = 0; i < run.messages.length; i++) {
-        const msg: Message = run.messages[i];
-        if (typeof msg.config.content !== "string") continue;
-
-        try {
-          // If this is a final answer, hide all previous step executions
-          if (messageUtils.isFinalAnswer(msg.config.metadata)) {
-            for (let j = 0; j < i; j++) {
-              const prevMsg: Message = run.messages[j];
-              if (typeof prevMsg.config.content === "string") {
-                try {
-                  if (messageUtils.isStepExecution(prevMsg.config.metadata)) {
-                    newHiddenStepExecutionIndices.add(j);
-                    handleToggleHide(j, false);
-                    // delay for 100ms
-                    await new Promise((resolve) => setTimeout(resolve, 100));
-                  }
-                } catch {}
-              }
-            }
-            continue;
-          }
-          const content = JSON.parse(msg.config.content);
-
-          // If this is a step execution that's not repeated
-          if (
-            messageUtils.isStepExecution(msg.config.metadata) &&
-            !newRepeatedIndices.has(i)
-          ) {
-            // Hide all previous step executions
-            for (let j = 0; j < i; j++) {
-              const prevMsg: Message = run.messages[j];
-              if (typeof prevMsg.config.content === "string") {
-                try {
-                  if (messageUtils.isStepExecution(prevMsg.config.metadata)) {
-                    if (!newRepeatedIndices.has(j)) {
-                      handleToggleHide(j, false);
-                      newHiddenStepExecutionIndices.add(j);
-                      // delay for 100ms
-                      await new Promise((resolve) => setTimeout(resolve, 100));
-                    }
-                  }
-                } catch {}
-              }
-            }
-          }
-        } catch {}
-      }
-
-      if (
-        newHiddenStepExecutionIndices.size > 0 &&
-        newHiddenStepExecutionIndices !== hiddenStepExecutionIndices
-      ) {
-        setHiddenStepExecutionIndices((prevSet) => {
-          const updatedSet = new Set(prevSet);
-          newHiddenStepExecutionIndices.forEach((index) => {
-            updatedSet.add(index);
-          });
-          return updatedSet;
-        });
-      }
-    })();
-  }, [run.messages]);
-
-  useEffect(() => {
-    if (!run.messages.length) return;
-
-    const updatedMessages = [...run.messages];
-
-    updatedMessages.forEach((msg: Message, idx: number) => {
-      if (idx === 0) return;
-
-      const userPlans = messageUtils.findUserPlan(msg.config.content);
-
-      // Check if this is a user message with a plan
-      if (messageUtils.isUser(msg.config.source) && userPlans.length > 0) {
-        const prevIdx = idx - 1;
-        const prevMsg = updatedMessages[prevIdx];
-
-        // Check if previous message is a plan
-        if (prevMsg && messageUtils.isPlanMessage(prevMsg.config.metadata)) {
-          try {
-            // Create a new message object with updated content
-            const updatedContent = messageUtils.updatePlan(
-              prevMsg.config.content,
-              userPlans
-            );
-
-            if (updatedContent !== prevMsg.config.content) {
-              updatedMessages[prevIdx] = {
-                ...prevMsg,
-                config: {
-                  ...prevMsg.config,
-                  content: updatedContent,
-                  version: (prevMsg.config.version || 0) + 1,
-                },
-              };
-            }
-          } catch (error) {
-            console.error(
-              `Error updating plan for message at index ${prevIdx}:`,
-              error
-            );
-          }
-        }
-      }
-    });
-
-    setLocalMessages(updatedMessages);
-  }, [run.messages]);
-
-  // Update useEffect to find the last plan message
-  useEffect(() => {
-    let lastIdx = -1;
-    run.messages.forEach((msg: Message, idx: number) => {
-      if (
-        typeof msg.config.content === "string" &&
-        messageUtils.isPlanMessage(msg.config.metadata)
-      ) {
-        lastIdx = idx;
-      }
-    });
-    setLastPlanIndex(lastIdx);
-  }, [run.messages]);
-
-  // Update handleRegeneratePlan to work with the effect
   const handleRegeneratePlan = () => {
     if (onRegeneratePlan) {
       onRegeneratePlan();
     }
   };
 
-  // Add this before the return statement
-  const lastMessage = localMessages[localMessages.length - 1];
-  const isPlanMsg =
-    lastMessage && messageUtils.isPlanMessage(lastMessage.config.metadata);
-
-  // Add this effect to handle scrolling when status changes
-  useEffect(() => {
-    if (run.status === "awaiting_input" && threadContainerRef.current) {
-      // Scroll to bottom of messages when awaiting input
-      setTimeout(() => {
-        const container = threadContainerRef.current;
-        if (container) {
-          container.scrollTop = container.scrollHeight;
-        }
-      }, 100);
-    }
-  }, [run.status]);
-
   return (
-    <div className="flex w-full gap-4 h-full">
-      {/* Messages section */}
+    <div className="flex h-full w-full flex-col">
       <div
-        className={`items-start relative flex flex-col h-full ${
-          (showDetailViewer &&
-            novncPort !== undefined &&
-            !isDetailViewerMinimized) ||
-          (showCodeEditor &&
-            hasCode &&
-            !isCodeEditorMinimized)
-            ? (detailViewerExpanded || codeEditorExpanded)
-              ? "w-0"
-              : "w-[40%]"
-            : "w-full"
-        } transition-all duration-300`}
+        ref={threadContainerRef}
+        className="flex-grow overflow-y-auto p-4"
+        style={{ height: "calc(100vh - 200px)" }}
       >
-        {/* Thread Section - scrollable messages area only */}
-        <div 
-          className="w-full flex-1 overflow-y-auto scroll"
-          ref={threadContainerRef}
-        >
-          {/* 显示临时消息 - 只在没有真实消息时显示 */}
-          {pendingMessage && localMessages.length === 0 && (
-            <div className="w-full">
-              <RenderMessage
-                message={{
-                  source: "user",
-                  content: pendingMessage,
-                  metadata: { type: "user_message" },
-                  version: 0,
-                }}
-                                 sessionId={0}
-                messageIdx={-1}
-                isLast={true}
-                isEditable={false}
-                hidden={false}
-                is_step_repeated={false}
-                is_step_failed={false}
-                onSavePlan={() => {}}
-                onImageClick={() => {}}
-                onToggleHide={() => {}}
-                runStatus={run.status}
-                onOpenCodeEditor={() => {}}
-                novncPort={novncPort}
-                showDetailViewer={showDetailViewer}
-                onToggleDetailViewer={onToggleDetailViewer}
-                showCodeEditor={showCodeEditor}
-                isCodeEditorMinimized={isCodeEditorMinimized}
-                onToggleCodeEditor={onToggleCodeEditor}
-                onMinimizeCodeEditor={() => setIsCodeEditorMinimized?.(true)}
+        {messages.map((msg, index) => {
+          if (isConfirmationMessage(msg)) {
+            return (
+              <ConfirmationRenderer
+                key={msg.id || index}
+                message={msg}
+                onConfirm={onAcceptPlan}
+                onCancel={onCancel}
               />
-            </div>
-          )}
-          
-          {localMessages.length > 0 &&
-            localMessages.map((msg: Message, idx: number) => {
-              const isCurrentMessagePlan =
-                typeof msg.config.content === "string" &&
-                messageUtils.isPlanMessage(msg.config.metadata);
-
-              const isLatestPlan =
-                isCurrentMessagePlan && idx === localMessages.length - 1;
-
-              const shouldForceCollapse =
-                isCurrentMessagePlan && idx !== lastPlanIndex;
-
-              return (
-                <div
-                  key={`message-${idx}-${run.id}`}
-                  className="w-full"
-                  ref={
-                    messageUtils.isUser(msg.config.source)
-                      ? latestUserMessageRef
-                      : null
-                  }
-                >
-                  <RenderMessage
-                    key={`render-${idx}-${msg.config.version || 0}`}
-                    message={msg.config}
-                    sessionId={msg.session_id}
-                    messageIdx={idx}
-                    isLast={idx === localMessages.length - 1}
-                    isEditable={isEditable && idx === localMessages.length - 1}
-                    hidden={
-                      hiddenMessageIndices.has(idx) ||
-                      hiddenStepExecutionIndices.has(idx)
-                    }
-                    is_step_repeated={repeatedStepIndices.has(idx)}
-                    is_step_failed={failedStepIndices.has(idx)}
-                    onSavePlan={onSavePlan}
-                    onImageClick={() => handleImageClick(idx)}
-                    onToggleHide={(expanded: boolean) =>
-                      handleToggleHide(idx, expanded)
-                    }
-                    runStatus={run.status}
-                    onRegeneratePlan={
-                      isLatestPlan ? handleRegeneratePlan : undefined
-                    }
-                    forceCollapsed={shouldForceCollapse}
-                    onOpenCodeEditor={(code: string) => {
-                      onOpenCodeInEditor?.(code);
-                    }}
-                    novncPort={novncPort}
-                    showDetailViewer={showDetailViewer}
-                    onToggleDetailViewer={onToggleDetailViewer}
-                    showCodeEditor={showCodeEditor}
-                    isCodeEditorMinimized={isCodeEditorMinimized}
-                    onToggleCodeEditor={onToggleCodeEditor}
-                    onMinimizeCodeEditor={() => setIsCodeEditorMinimized?.(true)}
-                  />
-                </div>
-              );
-            })}
-        </div>
-
-        {/* Status Icon - fixed between messages and input */}
-        <div className="pt-2 pb-2 flex-shrink-0 border-t border-accent bg-background">
-          <div className="inline-block w-full">
-            {getStatusIcon(
-              run.status,
-              run.error_message,
-              run.team_result?.task_result?.stop_reason,
-              run.input_request
-            )}
-          </div>
-        </div>
-
-        {/* Approval Buttons - fixed between status and input */}
-        <div className="flex-shrink-0 bg-background">
+            );
+          }
+          return (
+            <RenderMessage
+              key={msg.id || index}
+              message={msg.config}
+              messageIdx={index}
+              hidden={hiddenMessageIndices.has(index)}
+              onToggleHide={() => toggleMessageVisibility(index)}
+              onImageClick={handleImageClick}
+              onOpenCodeInEditor={onOpenCodeInEditor}
+            />
+          );
+        })}
+      </div>
+      <div
+        ref={buttonsContainerRef}
+        className="buttons-container shrink-0 p-4"
+      >
+        {run.input_request?.input_type === "approval" ? (
           <ApprovalButtons
             status={run.status}
-            inputRequest={run.input_request}
-            isPlanMessage={isPlanMsg}
-            onApprove={onApprove}
-            onDeny={onDeny}
-            onAcceptPlan={onAcceptPlan}
-            onRegeneratePlan={onRegeneratePlan}
+            onApprove={handleApprove}
+            onDeny={handleDeny}
           />
-        </div>
-
-        {/* ChatInput - fixed at bottom */}
-        <div
-          ref={buttonsContainerRef}
-          className="flex-shrink-0 w-full bg-background"
-        >
-          <ChatInput
-            ref={chatInputRef}
-            onSubmit={(
-              query: string,
-              files: RcFile[],
-              accepted = false,
-              plan?: IPlan
-            ) => {
-              if (run.status === "awaiting_input" || run.status === "paused") {
-                onInputResponse?.(query, accepted, plan);
-              } else {
-                onRunTask?.(query, files, plan, true);
+        ) : null}
+        <ChatInput
+          ref={chatInputRef}
+          onSubmit={(query, files, accepted, plan) => {
+            if (
+              run.status === "awaiting_input" ||
+              run.status === "paused"
+            ) {
+              if (onInputResponse) {
+                onInputResponse(query, accepted, plan);
               }
+            } else {
+              if (onRunTask) {
+                onRunTask(query, files, plan, true);
+              }
+            }
+          }}
+          error={error ?? null}
+          onCancel={onCancel}
+          runStatus={run.status}
+          inputRequest={run.input_request}
+          isPlanMessage={
+            messages.length > 0 &&
+            messageUtils.isPlanMessage(
+              messages[messages.length - 1].config.metadata
+            )
+          }
+          onPause={onPause}
+          enable_upload={enable_upload}
+          onExecutePlan={onExecutePlan}
+        />
+      </div>
+      {showDetailViewer && (
+        <div
+          id={DETAIL_VIEWER_CONTAINER_ID}
+          className={`fixed bottom-0 right-0 z-50 transition-all duration-300 ${
+            isDetailViewerMinimized
+              ? "h-12 w-48"
+              : "h-full w-full md:h-3/4 md:w-3/4"
+          }`}
+        >
+          <DetailViewer
+            novncPort={novncPort}
+            activeTab={detailViewerTab}
+            images={messageImages.urls}
+            imageTitles={[]} // Providing empty array as it's required
+            currentIndex={messageImages.currentIndex ?? 0}
+            onMinimize={() => setShowDetailViewer(false)}
+            isExpanded={!isDetailViewerMinimized}
+            onToggleExpand={() =>
+              setIsDetailViewerMinimized(!isDetailViewerMinimized)
+            }
+            onIndexChange={(index) => {
+              setMessageImages((prev) => ({ ...prev, currentIndex: index }));
             }}
-            error={error ?? null}
-            onCancel={onCancel}
-            runStatus={run.status}
-            isPlanMessage={isPlanMsg}
-            onPause={onPause}
-            enable_upload={enable_upload}
-            inputRequest={run.input_request}
-            onExecutePlan={onExecutePlan}
           />
         </div>
-      </div>
-
-
-
-      {showDetailViewer &&
-        novncPort !== undefined &&
-        !isDetailViewerMinimized && (
-          <div
-            className={`${
-              detailViewerExpanded ? "w-full" : "w-[60%]"
-            } self-start sticky top-0 h-full transform transition-all duration-300 ease-in-out ${
-              showDetailViewer ? "translate-x-0 opacity-100" : "translate-x-full opacity-0"
-            }`}
-          >
-            <div className="h-full flex-1">
-              <DetailViewer
-                images={messageImages.urls}
-                imageTitles={messageImages.titles}
-                onMinimize={() => setIsDetailViewerMinimized(true)}
-                onToggleExpand={() =>
-                  setDetailViewerExpanded(!detailViewerExpanded)
-                }
-                isExpanded={detailViewerExpanded}
-                currentIndex={messageImages.currentIndex || 0}
-                onIndexChange={(index: number) =>
-                  setMessageImages((prev) => ({
-                    ...prev,
-                    currentIndex: index,
-                  }))
-                }
-                novncPort={novncPort}
-                onPause={onPause}
-                runStatus={run.status}
-                activeTab={detailViewerTab}
-                onTabChange={setDetailViewerTab}
-                detailViewerContainerId={DETAIL_VIEWER_CONTAINER_ID}
-                onInputResponse={onInputResponse}
-              />
-            </div>
-          </div>
-        )}
-
-      {/* Code IDE Editor section */}
-      {(() => {
-        console.log('##### CodeEditor render conditions #####', {
-          showCodeEditor,
-          hasCode,
-          isCodeEditorMinimized,
-          shouldShow: showCodeEditor && hasCode && !isCodeEditorMinimized
-        });
-        return null;
-      })()}
-      {showCodeEditor &&
-        hasCode &&
-        !isCodeEditorMinimized && (
-          <div
-            className={`${
-              codeEditorExpanded ? "w-full" : "w-[60%]"
-            } self-start sticky top-0 h-full transform transition-all duration-300 ease-in-out ${
-              showCodeEditor ? "translate-x-0 opacity-100" : "translate-x-full opacity-0"
-            }`}
-          >
-            <div className="h-full flex-1">
-              <CodeIDEEditor
-                code={currentCode}
-                language="python"
-                onMinimize={() => setIsCodeEditorMinimized?.(true)}
-                onToggleExpand={() =>
-                  setCodeEditorExpanded(!codeEditorExpanded)
-                }
-                isExpanded={codeEditorExpanded}
-                onRun={onCodeRun}
-                onTest={onCodeTest}
-                terminalOutput=""
-                isRunning={false}
-                isTesting={false}
-                readOnly={false}
-              />
-            </div>
-          </div>
-        )}
+      )}
+      {showCodeEditor && (
+        <div
+          className={`fixed bottom-0 right-0 z-50 transition-all duration-300 ${
+            isCodeEditorMinimized
+              ? "h-12 w-48"
+              : "h-full w-full md:h-3/4 md:w-3/4"
+          }`}
+        >
+          <CodeIDEEditor
+            code={currentCode}
+            onRun={onCodeRun}
+            onTest={onCodeTest}
+            onMinimize={() => setShowCodeEditor(false)}
+            isExpanded={!isCodeEditorMinimized}
+            onToggleExpand={() =>
+              setIsCodeEditorMinimized && setIsCodeEditorMinimized(!isCodeEditorMinimized)
+            }
+          />
+        </div>
+      )}
     </div>
   );
 };

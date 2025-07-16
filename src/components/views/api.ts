@@ -35,6 +35,7 @@ export class SessionAPI {
       }
     );
     const data = await response.json();
+    console.log("###data", data);
     if (!data.status)
       throw new Error(data.message || "Failed to fetch session");
     return data.data;

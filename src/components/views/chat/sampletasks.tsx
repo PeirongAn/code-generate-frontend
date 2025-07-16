@@ -5,12 +5,8 @@ interface SampleTasksProps {
 }
 
 const SAMPLE_TASKS = [
-  "今天我附近的邮局几点关门？",
-  "查找微软研究院AI前沿实验室关于人机交互的最新论文",
-  "Microsoft/markitdown仓库的哪个提交引入了MCP支持？",
-  "用Python制作一个Markdown文件，总结Microsoft AutoGen仓库的内容",
-  "帮我在Tangle Town Pub订一个自定义披萨，要香肠、菠萝和黑橄榄",
-  "在arXiv上搜索关于计算机使用代理的最新论文",
+  "帮我制定打了就跑的计划",
+  "今天我附近的邮局几点关门？"
 ];
 
 const SampleTasks: React.FC<SampleTasksProps> = ({ onSelect }) => {
