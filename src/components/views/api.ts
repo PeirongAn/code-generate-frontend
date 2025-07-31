@@ -373,7 +373,7 @@ export class PlanAPI {
     }
   }
 
-  async learnPlan(sessionId: number, userId: string): Promise<any> {
+  async learnPlan(sessionId: number | string, userId: string): Promise<any> {
     try {
       const response = await fetch(`${this.getBaseUrl()}/plans/learn_plan`, {
         method: "POST",

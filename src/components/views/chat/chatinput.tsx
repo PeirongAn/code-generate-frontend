@@ -379,6 +379,7 @@ const ChatInput = React.forwardRef<{ focus: () => void }, ChatInputProps>(
       accepted: boolean,
       doResetInput: boolean = true
     ) => {
+      console.log('##### submitInternal #####', query, attachedPlan);
       if (attachedPlan) {
         onSubmit(query, files, accepted, attachedPlan);
       } else {

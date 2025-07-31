@@ -29,7 +29,7 @@ import ThinkingRenderer from "./ThinkingRenderer";
 // Types
 interface MessageProps {
   message: AgentMessageConfig;
-  sessionId: number;
+  sessionId: number | string;
   messageIdx: number;
   isLast?: boolean;
   className?: string;
@@ -51,7 +51,7 @@ interface MessageProps {
   // 代码编辑器控制相关 props
   showCodeEditor?: boolean;
   isCodeEditorMinimized?: boolean;
-  onToggleCodeEditor?: () => void;
+  onToggleCodeEditor?: (code: string) => void;
   onMinimizeCodeEditor?: () => void;
 }
 
@@ -493,7 +493,7 @@ const RenderStepExecution: React.FC<RenderStepExecutionProps> = memo(
 
 interface RenderFinalAnswerProps {
   content: string;
-  sessionId: number;
+  sessionId: number | string;
   messageIdx: number;
 }
 interface RenderAgentErrorProps {
@@ -605,7 +605,7 @@ export const messageUtils = {
   },
 
   isPlanMessage(metadata?: Record<string, any>): boolean {
-    return metadata?.type === "plan" || metadata?.content_type === "plan";
+    return metadata?.type === "steps" || metadata?.content_type === "steps";
   },
 
   isStepExecution(metadata?: Record<string, any>): boolean {
@@ -700,6 +700,7 @@ export const messageUtils = {
         return { steps: [] };
       }
     }
+    console.log('####get parseStepsFromResponse####', content)
     try {
       const parsed = JSON.parse(jsonString);
       const rawSteps = parsed.steps || [];
@@ -758,14 +759,15 @@ export const messageUtils = {
   },
 
   isCodeMessage(message: AgentMessageConfig): boolean {
-    if (message.content) {
-      const contentStr = Array.isArray(message.content)
-        ? message.content.join("\n")
-        : String(message.content);
-      const codeBlockRegex = /```.*\n[\s\S]*?\n```/;
-      return codeBlockRegex.test(contentStr);
-    }
-    return false;
+    // if (message.content) {
+    //   const contentStr = Array.isArray(message.content)
+    //     ? message.content.join("\n")
+    //     : String(message.content);
+    //   const codeBlockRegex = /```.*\n[\s\S]*?\n```/;
+    //   return codeBlockRegex.test(contentStr);
+    // }
+    // return false;
+    return message.metadata?.type === "codes";
   },
 
   isBrowserMessage(message: AgentMessageConfig): boolean {
@@ -970,10 +972,13 @@ export const RenderMessage: React.FC<MessageProps> = memo(
       return (
         <div
           className="flex items-center text-gray-500 cursor-pointer"
-          onClick={() => onToggleHide?.(true)}
+          onClick={() => {
+            console.log('##### toggle hide #####')
+            onToggleHide?.(true)
+          }}
         >
-          <ChevronRight size={16} />
-          <span>Show hidden messages</span>
+          {/* <ChevronRight size={16} />
+          <span>Show hidden messages</span> */}
         </div>
       );
     }
@@ -1074,7 +1079,7 @@ export const RenderMessage: React.FC<MessageProps> = memo(
                   isComplete={message.metadata?.is_complete || false}
                   timestamp={message.metadata?.timestamp}
                 />
-              ) : messageUtils.isResponseMessage(message.metadata) && messageUtils.isStepsResponse(parsedContent.text) ? (
+              ) : messageUtils.isPlanMessage(message.metadata) ? (
                 (() => {
                   const { steps, summary, dialog } = messageUtils.parseStepsFromResponse(String(parsedContent.text));
                   return (

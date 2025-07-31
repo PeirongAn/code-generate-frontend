@@ -5,7 +5,7 @@ import { PlanAPI } from "../../views/api";
 import { LightBulbIcon, CheckCircleIcon } from "@heroicons/react/24/outline";
 
 interface LearnPlanButtonProps {
-  sessionId: number;
+  sessionId: number | string;
   messageId: number;
   userId?: string;
   onSuccess?: (planId: string) => void;

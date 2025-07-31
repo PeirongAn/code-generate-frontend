@@ -267,6 +267,7 @@ export default function ChatView({
         // Only load data if component is visible
         const latestRun = await loadSessionRun();
         if (latestRun) {
+          console.log('#### AAAAA get run 0', latestRun)
           setCurrentRun(latestRun);
           setMessages(latestRun.messages || []);
           setNoMessagesYet(latestRun.messages.length === 0);
@@ -290,7 +291,7 @@ export default function ChatView({
               }
 
               // Check for code messages
-              if (message.config.metadata?.type === "code" ||
+              if (message.config.metadata?.type === "codes" ||
                   (typeof message.config.content === "string" && 
                    (message.config.content.includes("```python") || 
                     message.config.content.includes("def ") ||
@@ -329,6 +330,7 @@ export default function ChatView({
           });
         }
       } else {
+        console.log('#### AAAAA get run 1', null)
         setCurrentRun(null);
         setSessionRunId(null);
         setMessages([]);
@@ -452,7 +454,7 @@ export default function ChatView({
       };
     }
   }, [session?.id, visible, activeSocket, onRunStatusChange]);
-
+  // websocket message handler
   const handleWebSocketMessage = (message: WebSocketMessage) => {
     if (message.type === "message" && message.data && session?.id) {
       const newMessage = createMessage(
@@ -500,6 +502,10 @@ export default function ChatView({
     }
 
     setCurrentRun((current: Run | null) => {
+      console.log('#### AAAAA get run 3', message?.data?.metadata?.type, current?.messages)
+      if (message?.data?.metadata?.type === "response") {
+        console.log('#### AAAAA get run 3', message?.data?.content)
+      }
       if (!current || !session?.id) {
         if (message.type === "system" && message.status && session?.id) {
           return {
@@ -531,7 +537,7 @@ export default function ChatView({
             setActiveSocket(null);
             activeSocketRef.current = null;
           }
-          console.log("Error: ", message.error);
+          console.log("one Error: ", message.error);
           return {
             ...current,
             status: "error",
@@ -540,49 +546,63 @@ export default function ChatView({
 
         case "message":
           if (!message.data) return current;
-
-          const newMessage = createMessage(
-            message.data as AgentMessageConfig,
-            sessionRunId || generateSessionRunId(),
-            session.id
-          );
-
-          // Check for browser_address message and extract novncPort
-          if (newMessage.config.metadata?.type === "browser_address" && 
-              newMessage.config.metadata?.novnc_port) {
-            const port = newMessage.config.metadata.novnc_port;
-            if (port !== novncPort) {
-              setNovncPort(port);
-            }
-          }
-
-          // Check for code messages and extract code content
-          if (newMessage.config.metadata?.type === "code" ||
-              (typeof newMessage.config.content === "string" && 
-               (newMessage.config.content.includes("```python") || 
-                newMessage.config.content.includes("def ") ||
-                newMessage.config.content.includes("import ")))) {
-            setHasCode(true);
-            // Extract code from markdown code blocks or direct content
-            let codeContent = "";
-            if (typeof newMessage.config.content === "string") {
-              const codeBlockMatch = newMessage.config.content.match(/```(?:python)?\n?([\s\S]*?)```/);
-              if (codeBlockMatch) {
-                codeContent = codeBlockMatch[1].trim();
-              } else if (newMessage.config.content.includes("def ") || 
-                        newMessage.config.content.includes("import ")) {
-                codeContent = newMessage.config.content;
+          const lastMessage = current?.messages[current.messages.length - 1];
+          const isAppending = lastMessage && (lastMessage.config?.metadata?.is_complete === false || (
+            (message.data as AgentMessageConfig).metadata?.is_complete === true &&
+            (message.data as AgentMessageConfig).content === ""
+          ));
+          if (!isAppending) {
+            const newMessage = createMessage(
+              message.data as AgentMessageConfig,
+              sessionRunId || generateSessionRunId(),
+              session.id
+            );
+            // Check for browser_address message and extract novncPort
+            if (newMessage.config.metadata?.type === "browser_address" && 
+                newMessage.config.metadata?.novnc_port) {
+              const port = newMessage.config.metadata.novnc_port;
+              if (port !== novncPort) {
+                setNovncPort(port);
               }
             }
-            if (codeContent && codeContent !== currentCode) {
-              setCurrentCode(codeContent);
+
+            // Check for code messages and extract code content
+            if (newMessage.config.metadata?.type === "codes" ||
+                (typeof newMessage.config.content === "string" && 
+                (newMessage.config.content.includes("```python") || 
+                  newMessage.config.content.includes("def ") ||
+                  newMessage.config.content.includes("import ")))) {
+              setHasCode(true);
+              // Extract code from markdown code blocks or direct content
+              let codeContent = "";
+              if (typeof newMessage.config.content === "string") {
+                const codeBlockMatch = newMessage.config.content.match(/```(?:python)?\n?([\s\S]*?)```/);
+                if (codeBlockMatch) {
+                  codeContent = codeBlockMatch[1].trim();
+                } else if (newMessage.config.content.includes("def ") || 
+                          newMessage.config.content.includes("import ")) {
+                  codeContent = newMessage.config.content;
+                }
+              }
+              if (codeContent && codeContent !== currentCode) {
+                setCurrentCode(codeContent);
+              }
+            }
+
+            return {
+              ...current,
+              messages: [...current.messages, newMessage],
+            };
+          }else {
+            const messages = current.messages;
+            const lastMessage = messages[messages.length - 1];
+            lastMessage.config.content = (lastMessage.config.content as string) + (message.data as AgentMessageConfig).content;
+            lastMessage.config.metadata = (message.data as AgentMessageConfig).metadata;
+            return {
+              ...current,
+              messages: [...messages.slice(0, -1), lastMessage],
             }
           }
-
-          return {
-            ...current,
-            messages: [...current.messages, newMessage],
-          };
 
         case "input_request":
           let input_request: InputRequest;
@@ -689,7 +709,8 @@ export default function ChatView({
 
     try {
       // Check if the last message is a plan
-      const lastMessage = currentRun.messages.slice(-1)[0];
+      const lastMessage = currentRun.messages.slice(-2)[0];
+      console.log('#### AAAAA get run lastMessage', lastMessage)
       var planString = "";
       if (plan) {
         planString = convertPlanStepsToJsonString(plan.steps);
@@ -715,6 +736,7 @@ export default function ChatView({
       );
 
       setCurrentRun((current: Run | null) => {
+        console.log('#### AAAAA get run 4', current)
         if (!current) return null;
         return {
           ...current,
@@ -723,6 +745,7 @@ export default function ChatView({
         };
       });
     } catch (error) {
+      console.log('##### handle input error #####', error);
       handleError(error);
     }
   };
@@ -783,6 +806,7 @@ export default function ChatView({
       );
 
       setCurrentRun((current: Run | null) => {
+        console.log('#### AAAAA get run 5', current)
         if (!current) return null;
         const updatedRun = {
           ...current,
@@ -818,6 +842,7 @@ export default function ChatView({
       );
 
       setCurrentRun((current: Run | null) => {
+        console.log('#### AAAAA get run 6', null)
         if (!current) return null;
         return {
           ...current,
@@ -1111,7 +1136,7 @@ export default function ChatView({
       if (typeof msg?.config?.content !== "string") return false;
       return messageUtils.isPlanMessage(msg.config.metadata);
     });
-
+    console.log('##### lastPlanMessage #####', lastPlanMessage);
     if (lastPlanMessage && typeof lastPlanMessage.config.content === "string") {
       try {
         const content = JSON.parse(lastPlanMessage.config.content);
@@ -1148,7 +1173,7 @@ export default function ChatView({
       lastFinalAnswerIndex === -1
         ? currentRun.messages
         : currentRun.messages.slice(lastFinalAnswerIndex + 1);
-
+    // console.log('##### relevantMessages #####', relevantMessages);
     relevantMessages.forEach((msg: Message) => {
       if (typeof msg?.config?.content === "string") {
         try {
@@ -1367,6 +1392,8 @@ export default function ChatView({
                     isCodeEditorMinimized={isCodeEditorMinimized}
                     setIsCodeEditorMinimized={setIsCodeEditorMinimized}
                     messages={messages}
+                    setShowCodeEditor={setShowCodeEditor}
+                    sessionId={session?.id ? String(session.id) : ''}
                   />
                 )}
               </>
@@ -1395,9 +1422,11 @@ export default function ChatView({
                     accepted = false,
                     plan?: IPlan
                   ) => {
+                    console.log('##### currentRun.status #####', currentRun.status);
                     if (
                       currentRun?.status === "awaiting_input" ||
-                      currentRun?.status === "paused"
+                      currentRun?.status === "paused" ||
+                      currentRun?.status === "final_answer_awaiting_input"
                     ) {
                       handleInputResponse(query, accepted, plan);
                     } else {

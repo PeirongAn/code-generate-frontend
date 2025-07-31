@@ -1,16 +1,15 @@
-import React, { useState, useRef, useEffect } from "react";
-import { Globe2, Code2 } from "lucide-react";
-import { Run, Message } from "../../types/datamodel";
-import { RenderMessage, messageUtils } from "./rendermessage";
+import { RcFile } from "antd/es/upload";
+import React, { useEffect, useRef, useState } from "react";
+import { IStatus } from "../../types/app";
+import { Message, Run } from "../../types/datamodel";
+import { IPlan, IPlanStep } from "../../types/plan";
 import { getStatusIcon } from "../statusicon";
-import DetailViewer from "./detail_viewer";
 import CodeIDEEditor from "./CodeIDEEditor";
-import { IPlanStep, IPlan } from "../../types/plan";
+import ConfirmationRenderer from "./ConfirmationRenderer";
 import ApprovalButtons from "./approval_buttons";
 import ChatInput from "./chatinput";
-import { IStatus } from "../../types/app";
-import { RcFile } from "antd/es/upload";
-import ConfirmationRenderer from "./ConfirmationRenderer";
+import DetailViewer from "./detail_viewer";
+import { RenderMessage, messageUtils } from "./rendermessage";
 
 const DETAIL_VIEWER_CONTAINER_ID = "detail-viewer-container";
 
@@ -23,6 +22,7 @@ interface RunViewProps {
   setIsDetailViewerMinimized: (minimized: boolean) => void;
   showDetailViewer: boolean;
   setShowDetailViewer: (show: boolean) => void;
+  setShowCodeEditor: (show: boolean) => void;
   onApprove?: () => void;
   onDeny?: () => void;
   onAcceptPlan?: (text: string) => void;
@@ -54,6 +54,7 @@ interface RunViewProps {
   setIsCodeEditorMinimized?: (minimized: boolean) => void;
   // 消息列表
   messages: Message[];
+  sessionId: string;
 }
 
 const RunView: React.FC<RunViewProps> = ({
@@ -65,6 +66,7 @@ const RunView: React.FC<RunViewProps> = ({
   setIsDetailViewerMinimized,
   showDetailViewer,
   setShowDetailViewer,
+  setShowCodeEditor,
   onApprove,
   onDeny,
   onAcceptPlan,
@@ -100,7 +102,7 @@ const RunView: React.FC<RunViewProps> = ({
   };
   const threadContainerRef = useRef<HTMLDivElement | null>(null);
   const [localNovncPort, setLocalNovncPort] = useState<string | undefined>();
-  
+  const [localMessages, setLocalMessages] = useState<Message[]>([]);
   // Use external novncPort if provided, otherwise use local state
   const novncPort = externalNovncPort || localNovncPort;
   const [detailViewerExpanded, setDetailViewerExpanded] = useState(false);
@@ -256,6 +258,97 @@ const RunView: React.FC<RunViewProps> = ({
       handleMaximize();
     }
   };
+  const handleToggleHide = async (messageIndex: number, expanded: boolean) => {
+    // If a toggle operation is already in progress, ignore this request
+    if (isTogglingRef.current) {
+      console.log(
+        "Something bad: Toggle operation already in progress, ignoring request"
+      );
+      return;
+    }
+
+    try {
+      isTogglingRef.current = true;
+      const newIndicesToHide = new Set();
+
+      // Find the next significant message index
+      let nextSignificantIndex = run.messages.length; // Default to end of messages
+      for (let i = messageIndex + 1; i < run.messages.length; i++) {
+        const msg = run.messages[i];
+        const content = msg.config.content;
+
+        // Check if this is a significant message that should stop the hiding
+        if (
+          typeof content === "string" &&
+          (messageUtils.isFinalAnswer(msg.config.metadata) ||
+            messageUtils.isPlanMessage(msg.config.metadata))
+        ) {
+          nextSignificantIndex = i;
+          break;
+        }
+
+        // Check for messages with title and details that aren't duplicates
+        if (
+          messageUtils.isStepExecution(msg.config.metadata) &&
+          typeof content === "string"
+        ) {
+          try {
+            const currentStep = JSON.parse(content);
+            if (currentStep.title && currentStep.details) {
+              // Check if this step is a duplicate of any previous step
+              const earlierMessages = run.messages.slice(0, i);
+              const isDuplicate = earlierMessages.some(
+                (earlierMsg: Message) => {
+                  if (typeof earlierMsg.config.content !== "string")
+                    return false;
+                  try {
+                    const earlierContent = JSON.parse(
+                      earlierMsg.config.content
+                    );
+                    return (
+                      earlierContent.title === currentStep.title &&
+                      earlierContent.details === currentStep.details
+                    );
+                  } catch {
+                    return false;
+                  }
+                }
+              );
+
+              if (!isDuplicate) {
+                nextSignificantIndex = i;
+                break;
+              }
+            }
+          } catch {
+            // If we can't parse the JSON, continue to next message
+            continue;
+          }
+        }
+      }
+
+      // Update hidden states for messages between current and next significant message
+      for (let i = messageIndex + 1; i < nextSignificantIndex; i++) {
+        newIndicesToHide.add(i);
+      }
+      if (!expanded) {
+        setHiddenMessageIndices((prevSet) => {
+          const updatedSet = new Set(prevSet);
+          newIndicesToHide.forEach((index: any) => updatedSet.add(index));
+          return updatedSet;
+        });
+      } else {
+        setHiddenMessageIndices((prevSet) => {
+          const updatedSet = new Set(prevSet);
+          newIndicesToHide.forEach((index: any) => updatedSet.delete(index));
+          return updatedSet;
+        });
+      }
+    } finally {
+      // Always reset the toggling flag when done
+      isTogglingRef.current = false;
+    }
+  };
 
   const toggleMessageVisibility = (index: number) => {
     setHiddenMessageIndices((prev) => {
@@ -280,13 +373,207 @@ const RunView: React.FC<RunViewProps> = ({
       return newSet;
     });
   };
+  useEffect(() => {
+    if (!run.messages.length) return;
 
+    const updatedMessages = [...run.messages];
+
+    // updatedMessages.forEach((msg: Message, idx: number) => {
+    //   if (idx === 0) return;
+
+    //   const userPlans = messageUtils.findUserPlan(msg.config.content);
+
+    //   // Check if this is a user message with a plan
+    //   if (messageUtils.isUser(msg.config.source) && userPlans.length > 0) {
+    //     const prevIdx = idx - 1;
+    //     const prevMsg = updatedMessages[prevIdx];
+
+    //     // Check if previous message is a plan
+    //     if (prevMsg && messageUtils.isPlanMessage(prevMsg.config.metadata)) {
+    //       try {
+    //         // Create a new message object with updated content
+    //         const updatedContent = messageUtils.updatePlan(
+    //           prevMsg.config.content,
+    //           userPlans
+    //         );
+
+    //         if (updatedContent !== prevMsg.config.content) {
+    //           updatedMessages[prevIdx] = {
+    //             ...prevMsg,
+    //             config: {
+    //               ...prevMsg.config,
+    //               content: updatedContent,
+    //               version: (prevMsg.config.version || 0) + 1,
+    //             },
+    //           };
+    //         }
+    //       } catch (error) {
+    //         console.error(
+    //           `Error updating plan for message at index ${prevIdx}:`,
+    //           error
+    //         );
+    //       }
+    //     }
+    //   }
+    // });
+    console.log('##### updatedMessages #####', updatedMessages);
+    setLocalMessages(updatedMessages);
+  }, [run.messages]);
   const isStepExecution = (message: Message): boolean => {
     return (
       message.config.metadata?.type === "step_execution" ||
       message.config.metadata?.type === "substep_execution"
     );
   };
+
+  useEffect(() => {
+    const newRepeatedIndices = new Set<number>();
+    const newFailedIndices = new Set<number>();
+    const newRepeatedHistory = new Map<number, number[]>();
+
+    // For each message that is a step execution
+    run.messages.forEach((msg: Message, msgIndex: number) => {
+      if (!isStepExecution(msg)) return;
+
+      try {
+        const content = JSON.parse(String(msg.config.content));
+
+        // Look for earlier messages with same step details
+        const earlierMessages = run.messages.slice(0, msgIndex);
+        const identicalStepIndices: number[] = [];
+
+        // Find all identical steps
+        earlierMessages.forEach((earlierMsg: Message, idx: number) => {
+          if (typeof earlierMsg.config.content !== "string") return;
+          try {
+            const earlierContent = JSON.parse(earlierMsg.config.content);
+            if (
+              earlierContent.index === content.index &&
+              earlierContent.title === content.title &&
+              earlierContent.details === content.details
+            ) {
+              identicalStepIndices.push(idx);
+            }
+          } catch {
+            return;
+          }
+        });
+        console.log('##### identicalStepIndices #####', identicalStepIndices);
+        // If we found identical steps, check for Final Answer or Plan after the last one
+        if (identicalStepIndices.length > 0) {
+          const messagesBetween = run.messages.slice(
+            identicalStepIndices[identicalStepIndices.length - 1] + 1,
+            msgIndex
+          );
+
+          const hasSeparator = messagesBetween.some((msg: Message) => {
+            if (typeof msg.config.content !== "string") return false;
+            return (
+              messageUtils.isPlanMessage(msg.config.metadata) ||
+              messageUtils.isFinalAnswer(msg.config.metadata)
+            );
+          });
+
+          // Only mark as repeated if there's no separator
+          if (!hasSeparator) {
+            newRepeatedIndices.add(msgIndex);
+            newRepeatedHistory.set(msgIndex, identicalStepIndices);
+          }
+        }
+
+        // Separate step failure detection
+        const nextMessages = run.messages.slice(msgIndex + 1);
+        for (const nextMsg of nextMessages) {
+          if (typeof nextMsg.config.content !== "string") continue;
+
+          // If we find a step execution, plan, or final answer before finding "Replanning...", break
+          try {
+            if (messageUtils.isStepExecution(nextMsg.config.metadata)) break;
+            if (messageUtils.isPlanMessage(nextMsg.config.metadata)) break;
+            if (nextMsg.config.metadata?.type === "replanning") {
+              newFailedIndices.add(msgIndex);
+              break;
+            }
+          } catch {
+            if (messageUtils.isFinalAnswer(nextMsg.config.metadata)) break;
+          }
+        }
+      } catch {
+        // Skip if we can't parse the message
+      }
+    });
+    setRepeatedStepIndices(newRepeatedIndices);
+    setFailedStepIndices(newFailedIndices);
+    console.log('##### newRepeatedIndices #####', newRepeatedIndices);
+    console.log('##### newFailedIndices #####', newFailedIndices);
+
+    // handle auto-hiding of previous step execution messages
+    const newHiddenStepExecutionIndices = new Set(hiddenStepExecutionIndices);
+    // Process messages in order
+    (async () => {
+      for (let i = 0; i < run.messages.length; i++) {
+        const msg: Message = run.messages[i];
+        if (typeof msg.config.content !== "string") continue;
+
+        try {
+          // If this is a final answer, hide all previous step executions
+          if (messageUtils.isFinalAnswer(msg.config.metadata)) {
+            for (let j = 0; j < i; j++) {
+              const prevMsg: Message = run.messages[j];
+              if (typeof prevMsg.config.content === "string") {
+                try {
+                  if (messageUtils.isStepExecution(prevMsg.config.metadata)) {
+                    newHiddenStepExecutionIndices.add(j);
+                    handleToggleHide(j, false);
+                    // delay for 100ms
+                    await new Promise((resolve) => setTimeout(resolve, 100));
+                  }
+                } catch {}
+              }
+            }
+            continue;
+          }
+          const content = JSON.parse(msg.config.content);
+
+          // If this is a step execution that's not repeated
+          if (
+            messageUtils.isStepExecution(msg.config.metadata) &&
+            !newRepeatedIndices.has(i)
+          ) {
+            // Hide all previous step executions
+            for (let j = 0; j < i; j++) {
+              const prevMsg: Message = run.messages[j];
+              if (typeof prevMsg.config.content === "string") {
+                try {
+                  if (messageUtils.isStepExecution(prevMsg.config.metadata)) {
+                    if (!newRepeatedIndices.has(j)) {
+                      handleToggleHide(j, false);
+                      newHiddenStepExecutionIndices.add(j);
+                      // delay for 100ms
+                      await new Promise((resolve) => setTimeout(resolve, 100));
+                    }
+                  }
+                } catch {}
+              }
+            }
+          }
+        } catch {}
+      }
+
+      if (
+        newHiddenStepExecutionIndices.size > 0 &&
+        newHiddenStepExecutionIndices !== hiddenStepExecutionIndices
+      ) {
+        setHiddenStepExecutionIndices((prevSet) => {
+          const updatedSet = new Set<number>(prevSet);
+          Array.from(newHiddenStepExecutionIndices).forEach((index) => {
+            updatedSet.add(index);
+          });
+          return updatedSet;
+        });
+      }
+    })();
+  }, [run.messages]);
 
   const handleSavePlan = () => {
     const lastMessage = messages[messages.length - 1];
@@ -325,6 +612,10 @@ const RunView: React.FC<RunViewProps> = ({
       onRegeneratePlan();
     }
   };
+  // Add this before the return statement
+  const lastMessage = localMessages[localMessages.length - 2];
+  const isPlanMsg =
+  lastMessage && messageUtils.isPlanMessage(lastMessage.config.metadata);
 
   return (
     <div className="flex h-full w-full flex-col">
@@ -333,44 +624,90 @@ const RunView: React.FC<RunViewProps> = ({
         className="flex-grow overflow-y-auto p-4"
         style={{ height: "calc(100vh - 200px)" }}
       >
-        {messages.map((msg, index) => {
-          if (isConfirmationMessage(msg)) {
-            return (
-              <ConfirmationRenderer
-                key={msg.id || index}
-                message={msg}
-                onConfirm={onAcceptPlan}
-                onCancel={onCancel}
-              />
-            );
-          }
-          return (
-            <RenderMessage
-              key={msg.id || index}
-              message={msg.config}
-              messageIdx={index}
-              hidden={hiddenMessageIndices.has(index)}
-              onToggleHide={() => toggleMessageVisibility(index)}
-              onImageClick={handleImageClick}
-              onOpenCodeInEditor={onOpenCodeInEditor}
+          {localMessages.length > 0 &&
+            localMessages.map((msg: Message, idx: number) => {
+              const isCurrentMessagePlan =
+                typeof msg.config.content === "string" &&
+                messageUtils.isPlanMessage(msg.config.metadata);
+
+              const isLatestPlan =
+                isCurrentMessagePlan && idx === localMessages.length - 1;
+
+              const shouldForceCollapse =
+                isCurrentMessagePlan && idx !== lastPlanIndex;
+
+              return (
+                <div
+                  key={`message-${msg.id || idx}-${run.id}`}
+                  className="w-full"
+                  ref={
+                    messageUtils.isUser(msg.config.source)
+                      ? latestUserMessageRef
+                      : null
+                  }
+                >
+                  <RenderMessage
+                    key={`render-${msg.id || idx}-${msg.config.version || 0}`}
+                    message={msg.config}
+                    sessionId={msg.session_id}
+                    messageIdx={idx}
+                    isLast={idx === localMessages.length - 1}
+                    isEditable={isEditable && idx === localMessages.length - 1}
+                    hidden={
+                      hiddenMessageIndices.has(idx)
+                    }
+                    is_step_repeated={repeatedStepIndices.has(idx)}
+                    is_step_failed={failedStepIndices.has(idx)}
+                    onSavePlan={onSavePlan}
+                    onImageClick={() => handleImageClick(idx)}
+                    onToggleHide={(expanded: boolean) =>
+                      handleToggleHide(idx, expanded)
+                    }
+                    runStatus={run.status}
+                    onRegeneratePlan={
+                      isLatestPlan ? handleRegeneratePlan : undefined
+                    }
+                    forceCollapsed={false}
+                  />
+                </div>
+              );
+            })}
+                  {/* Status Icon at top */}
+        <div className="pt-2 pb-2 flex-shrink-0">
+            <div className="inline-block">
+              {getStatusIcon(
+                run.status,
+                run.error_message,
+                run.team_result?.task_result?.stop_reason,
+                run.input_request
+              )}
+            </div>
+        </div>
+
+          {/* Approval Buttons after status */}
+          <div className="flex-shrink-0">
+            <ApprovalButtons
+              status={run.status}
+              inputRequest={run.input_request}
+              isPlanMessage={isPlanMsg}
+              onApprove={onApprove}
+              onDeny={onDeny}
+              onAcceptPlan={onAcceptPlan}
+              onRegeneratePlan={onRegeneratePlan}
             />
-          );
-        })}
+          </div>
+    
+        
       </div>
       <div
         ref={buttonsContainerRef}
         className="buttons-container shrink-0 p-4"
       >
-        {run.input_request?.input_type === "approval" ? (
-          <ApprovalButtons
-            status={run.status}
-            onApprove={handleApprove}
-            onDeny={handleDeny}
-          />
-        ) : null}
+       
         <ChatInput
           ref={chatInputRef}
           onSubmit={(query, files, accepted, plan) => {
+            console.log('##### run currentRun.status #####', run.status);
             if (
               run.status === "awaiting_input" ||
               run.status === "paused"
